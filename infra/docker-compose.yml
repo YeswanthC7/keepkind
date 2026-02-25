@@ -1,0 +1,14 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: keepkind
+      POSTGRES_PASSWORD: keepkind
+      POSTGRES_DB: keepkind
+    ports:
+      - "5432:5432"
+    volumes:
+      - keepkind_db:/var/lib/postgresql/data
+
+volumes:
+  keepkind_db:
