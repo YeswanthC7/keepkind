@@ -24,3 +24,14 @@ Early development.
 
 ## License
 TBD
+
+## Local development
+
+### Prereqs
+- Docker
+- Java 17+
+
+### Run database (Postgres + pgvector)
+```bash
+docker compose -f infra/docker-compose.yml up -d
+```
