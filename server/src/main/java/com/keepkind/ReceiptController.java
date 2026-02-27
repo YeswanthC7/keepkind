@@ -1,0 +1,155 @@
+package com.keepkind;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
+import org.springframework.web.bind.annotation.*;
+
+import java.sql.PreparedStatement;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/items/{itemId}")
+public class ReceiptController {
+
+    private final JdbcTemplate jdbc;
+    private final OllamaEmbeddingClient embedder;
+    private final OllamaChatClient chat;
+
+    public ReceiptController(JdbcTemplate jdbc, OllamaEmbeddingClient embedder, OllamaChatClient chat) {
+        this.jdbc = jdbc;
+        this.embedder = embedder;
+        this.chat = chat;
+    }
+
+    @PostMapping("/receipt")
+    public Map<String, Object> createReceipt(
+            @PathVariable long itemId,
+            @RequestParam String q,
+            @RequestParam(defaultValue = "5") int k
+    ) {
+        if (q == null || q.trim().isEmpty()) throw new IllegalArgumentException("q is required");
+        int topK = Math.max(1, Math.min(k, 10));
+
+        // Retrieve context (same as /ask)
+        var qVec = embedder.embedOne(q.trim());
+        String pgVec = toPgVector(qVec);
+
+        List<Map<String, Object>> ctx = jdbc.queryForList(
+                "SELECT id, source_id, chunk_index, content, (embedding <=> ?::vector) AS distance " +
+                "FROM chunks " +
+                "WHERE item_id = ? AND embedding IS NOT NULL " +
+                "ORDER BY embedding <=> ?::vector " +
+                "LIMIT ?",
+                pgVec, itemId, pgVec, topK
+        );
+
+        StringBuilder contextBlock = new StringBuilder();
+        for (Map<String, Object> row : ctx) {
+            contextBlock.append("CHUNK ")
+                    .append(row.get("id"))
+                    .append(" (source ")
+                    .append(row.get("source_id"))
+                    .append("):\n")
+                    .append(row.get("content"))
+                    .append("\n\n");
+        }
+
+        String system = """
+                You are KeepKind. Create a decision receipt using ONLY the provided context.
+                Output MUST be in this exact format:
+
+                RECOMMENDATION: <one of maintain|repair|resell|recycle|keep>
+                RATIONALE: <1-3 short sentences, grounded in context>
+                ASSUMPTIONS: <comma-separated list, or 'none'>
+
+                If context is insufficient, use:
+                RECOMMENDATION: keep
+                RATIONALE: I don't have enough information in the provided sources.
+                ASSUMPTIONS: none
+                """;
+
+        String user = "Question:\n" + q.trim() + "\n\nContext:\n" + contextBlock;
+        String out = chat.chat(system, user);
+
+        ParsedReceipt pr = ParsedReceipt.parse(out);
+
+        // citations json (simple list)
+        String citationsJson = ctx.stream()
+                .map(r -> String.format("{\"chunkId\":%s,\"sourceId\":%s,\"chunkIndex\":%s,\"distance\":%s}",
+                        r.get("id"), r.get("source_id"), r.get("chunk_index"), r.get("distance")))
+                .reduce((a, b) -> a + "," + b)
+                .map(s -> "[" + s + "]")
+                .orElse("[]");
+
+        String assumptionsJson = pr.assumptions().isEmpty()
+                ? "[]"
+                : pr.assumptions().stream()
+                    .map(a -> "\"" + a.replace("\"", "\\\"") + "\"")
+                    .reduce((a,b) -> a + "," + b)
+                    .map(s -> "[" + s + "]")
+                    .orElse("[]");
+
+        KeyHolder kh = new GeneratedKeyHolder();
+        jdbc.update(con -> {
+            PreparedStatement ps = con.prepareStatement(
+                    "INSERT INTO receipts(item_id, question, recommendation, rationale, citations, assumptions) " +
+                            "VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb)",
+                    new String[]{"id"}
+            );
+            ps.setLong(1, itemId);
+            ps.setString(2, q.trim());
+            ps.setString(3, pr.recommendation());
+            ps.setString(4, pr.rationale());
+            ps.setString(5, citationsJson);
+            ps.setString(6, assumptionsJson);
+            return ps;
+        }, kh);
+
+        long receiptId = kh.getKey().longValue();
+
+        return Map.of(
+                "receiptId", receiptId,
+                "itemId", itemId,
+                "question", q.trim(),
+                "recommendation", pr.recommendation(),
+                "rationale", pr.rationale(),
+                "assumptions", pr.assumptions(),
+                "citations", ctx
+        );
+    }
+
+    private static String toPgVector(List<Double> v) {
+        StringBuilder sb = new StringBuilder();
+        sb.append('[');
+        for (int i = 0; i < v.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(v.get(i));
+        }
+        sb.append(']');
+        return sb.toString();
+    }
+
+    record ParsedReceipt(String recommendation, String rationale, List<String> assumptions) {
+
+        static ParsedReceipt parse(String s) {
+            String rec = "keep";
+            String rat = "I don't have enough information in the provided sources.";
+            String ass = "none";
+
+            for (String line : s.split("\n")) {
+                String t = line.trim();
+                if (t.toUpperCase().startsWith("RECOMMENDATION:")) rec = t.substring("RECOMMENDATION:".length()).trim();
+                if (t.toUpperCase().startsWith("RATIONALE:")) rat = t.substring("RATIONALE:".length()).trim();
+                if (t.toUpperCase().startsWith("ASSUMPTIONS:")) ass = t.substring("ASSUMPTIONS:".length()).trim();
+            }
+
+            List<String> assumptions = (ass.equalsIgnoreCase("none") || ass.isBlank())
+                    ? List.of()
+                    : List.of(ass.split("\\s*,\\s*"));
+
+            return new ParsedReceipt(rec, rat, assumptions);
+        }
+    }
+}
