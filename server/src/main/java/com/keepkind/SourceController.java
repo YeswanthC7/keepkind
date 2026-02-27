@@ -16,9 +16,11 @@ import java.util.Map;
 public class SourceController {
 
     private final JdbcTemplate jdbc;
+    private final ChunkService chunkService;
 
-    public SourceController(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+    public SourceController(JdbcTemplate jdbc, ChunkService chunkService) {
+    	this.jdbc = jdbc;
+    	this.chunkService = chunkService;
     }
 
     public record AddTextSourceRequest(String title, String text, String trustLevel) {}
@@ -48,7 +50,9 @@ public class SourceController {
         }, kh);
 
         Number id = kh.getKey();
-        return Map.of("sourceId", id.longValue(), "itemId", itemId, "type", "text", "uri", uri, "contentHash", hash);
+	var parts = chunkService.chunk(req.text(), 800, 120);
+	chunkService.insertChunks(itemId, id.longValue(), parts);
+        return Map.of( "sourceId", id.longValue(), "itemId", itemId, "type", "text", "uri", uri, "contentHash", hash, "chunksCreated", parts.size());
     }
 
     private static String sha256(String s) {
