@@ -1,5 +1,6 @@
 package com.keepkind;
 
+
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
@@ -16,6 +17,7 @@ public class ReceiptController {
     private final JdbcTemplate jdbc;
     private final OllamaEmbeddingClient embedder;
     private final OllamaChatClient chat;
+    
 
     public ReceiptController(JdbcTemplate jdbc, OllamaEmbeddingClient embedder, OllamaChatClient chat) {
         this.jdbc = jdbc;
@@ -38,10 +40,10 @@ public class ReceiptController {
 
         List<Map<String, Object>> ctx = jdbc.queryForList(
                 "SELECT id, source_id, chunk_index, content, (embedding <=> ?::vector) AS distance " +
-                "FROM chunks " +
-                "WHERE item_id = ? AND embedding IS NOT NULL " +
-                "ORDER BY embedding <=> ?::vector " +
-                "LIMIT ?",
+                        "FROM chunks " +
+                        "WHERE item_id = ? AND embedding IS NOT NULL " +
+                        "ORDER BY embedding <=> ?::vector " +
+                        "LIMIT ?",
                 pgVec, itemId, pgVec, topK
         );
 
@@ -75,21 +77,29 @@ public class ReceiptController {
 
         ParsedReceipt pr = ParsedReceipt.parse(out);
 
-        // citations json (simple list)
+        // Clean citations JSON for persistence (no chunk text/content)
         String citationsJson = ctx.stream()
-                .map(r -> String.format("{\"chunkId\":%s,\"sourceId\":%s,\"chunkIndex\":%s,\"distance\":%s}",
-                        r.get("id"), r.get("source_id"), r.get("chunk_index"), r.get("distance")))
-                .reduce((a, b) -> a + "," + b)
-                .map(s -> "[" + s + "]")
-                .orElse("[]");
+        .map(r -> String.format("{\"chunkId\":%s,\"sourceId\":%s,\"distance\":%s}",
+                r.get("id"), r.get("source_id"), r.get("distance")))
+        .reduce((a, b) -> a + "," + b)
+        .map(s -> "[" + s + "]")
+        .orElse("[]");
+
+        List<Map<String, Object>> cleanCitations = ctx.stream()
+        .map(r -> Map.of(
+                "chunkId", r.get("id"),
+                "sourceId", r.get("source_id"),
+                "distance", r.get("distance")
+        ))
+        .toList();
 
         String assumptionsJson = pr.assumptions().isEmpty()
                 ? "[]"
                 : pr.assumptions().stream()
-                    .map(a -> "\"" + a.replace("\"", "\\\"") + "\"")
-                    .reduce((a,b) -> a + "," + b)
-                    .map(s -> "[" + s + "]")
-                    .orElse("[]");
+                .map(a -> "\"" + a.replace("\"", "\\\"") + "\"")
+                .reduce((a, b) -> a + "," + b)
+                .map(s -> "[" + s + "]")
+                .orElse("[]");
 
         KeyHolder kh = new GeneratedKeyHolder();
         jdbc.update(con -> {
@@ -116,7 +126,8 @@ public class ReceiptController {
                 "recommendation", pr.recommendation(),
                 "rationale", pr.rationale(),
                 "assumptions", pr.assumptions(),
-                "citations", ctx
+                // keep response unchanged for now (still returns full ctx rows)
+                "citations", cleanCitations
         );
     }
 
@@ -150,6 +161,71 @@ public class ReceiptController {
                     : List.of(ass.split("\\s*,\\s*"));
 
             return new ParsedReceipt(rec, rat, assumptions);
+        }
+    }
+
+    @GetMapping("/receipts")
+    public Map listReceipts(@PathVariable long itemId) {
+        var rows = jdbc.queryForList(
+                "SELECT id, item_id, question, recommendation, rationale, citations, assumptions " +
+                        "FROM receipts " +
+                        "WHERE item_id = ? " +
+                        "ORDER BY id DESC",
+                itemId
+        );
+
+        return Map.of(
+                "itemId", itemId,
+                "count", rows.size(),
+                "receipts", rows
+        );
+    }
+
+    @GetMapping("/receipts/{receiptId}/export.md")
+    public org.springframework.http.ResponseEntity<String> exportReceiptMarkdownForItem(
+            @PathVariable long itemId,
+            @PathVariable long receiptId
+    ) {
+        try {
+            var row = jdbc.queryForMap(
+                    "SELECT id, item_id, question, recommendation, rationale, citations, assumptions " +
+                    "FROM receipts WHERE id = ? AND item_id = ?",
+                    receiptId, itemId
+            );
+
+            StringBuilder md = new StringBuilder();
+            md.append("# KeepKind Decision Receipt\n\n");
+            md.append("**Receipt ID:** ").append(row.get("id")).append("\n\n");
+            md.append("**Item ID:** ").append(row.get("item_id")).append("\n\n");
+
+            md.append("## Question\n");
+            md.append(row.get("question")).append("\n\n");
+
+            md.append("## Recommendation\n");
+            md.append(row.get("recommendation")).append("\n\n");
+
+            md.append("## Rationale\n");
+            md.append(row.get("rationale")).append("\n\n");
+
+            md.append("## Assumptions\n");
+            md.append(row.get("assumptions")).append("\n\n");
+
+            md.append("## Citations\n");
+            md.append("```json\n");
+            md.append(row.get("citations"));
+            md.append("\n```\n");
+
+            return org.springframework.http.ResponseEntity.ok()
+                    .header("Content-Disposition",
+                            "attachment; filename=keepkind-receipt-" + receiptId + ".md")
+                    .contentType(org.springframework.http.MediaType.valueOf("text/markdown"))
+                    .body(md.toString());
+
+        } catch (Exception e) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.NOT_FOUND,
+                    "receipt not found for item"
+            );
         }
     }
 }

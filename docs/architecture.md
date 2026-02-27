@@ -95,3 +95,67 @@ KeepKind is a local-first service that helps users manage items they own and gen
 ## Current milestone status
 - Completed: ingestion → chunking → embeddings → vector retrieval → RAG answers → decision receipt generation + persistence.
 - Next (Phase 3): receipt listing/retrieval endpoints and receipt export (Markdown/PDF), plus stronger citation persistence/formatting.
+
+## Phase 3: Decision Receipts
+
+Phase 3 introduces persistent, evidence-backed “decision receipts” built on top of the existing local RAG pipeline.
+
+### Flow
+
+1. Client calls:
+   `POST /items/{itemId}/receipt?q=...&k=...`
+
+2. Server:
+   - Embeds the question using Ollama (`nomic-embed-text`)
+   - Runs vector similarity search in Postgres (pgvector) against `chunks.embedding`
+   - Retrieves top-k chunks for the given `item_id`
+
+3. Server constructs a constrained prompt and calls the local chat model (e.g. `llama3.2:3b`) to generate a structured receipt.
+
+4. Model output is parsed into:
+   - `recommendation` (maintain | repair | resell | recycle | keep)
+   - `rationale`
+   - `assumptions`
+
+5. Server persists a row in `receipts`:
+
+   - `item_id`
+   - `question`
+   - `recommendation`
+   - `rationale`
+   - `citations` (JSONB)
+   - `assumptions` (JSONB)
+
+### Citations storage
+
+Citations are stored as a clean JSON array (no chunk text):
+
+```json
+[
+  { "chunkId": 123, "sourceId": 45, "distance": 0.2134 }
+]
+
+This ensures:
+- Small storage footprint
+- Reproducibility
+- Traceability back to original chunks
+- Receipt Endpoints
+
+Create receipt
+POST /items/{itemId}/receipt?q=...&k=...
+
+List receipts for item
+GET /items/{itemId}/receipts
+
+Fetch single receipt
+GET /receipts/{receiptId}
+
+Export Markdown
+GET /receipts/{receiptId}/export.md
+GET /items/{itemId}/receipts/{receiptId}/export.md
+
+Design Principles
+- Local-first (Ollama + Postgres only)
+- Deterministic retrieval before generation
+- Structured output enforced via prompt contract
+- Receipts are durable artifacts, not ephemeral chat responses

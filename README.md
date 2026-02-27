@@ -54,3 +54,21 @@ curl -s -X POST http://localhost:8080/sources/1/embed
 # 4) Ask a question (returns answer + citations)
 curl -sG "http://localhost:8080/items/1/ask" \
   --data-urlencode "q=How often should I replace the burrs?"
+
+## Decision receipts (Phase 3)
+
+```bash
+# 1) Create a decision receipt (stores in DB)
+curl -s -X POST "http://localhost:8080/items/1/receipt?q=What%20should%20I%20do%20with%20this%20item%3F&k=5" | jq
+
+# 2) List receipts for an item
+curl -s "http://localhost:8080/items/1/receipts" | jq
+
+# 3) Fetch a receipt by id
+curl -s "http://localhost:8080/receipts/1" | jq
+
+# 4) Export receipt to Markdown (direct receipt route)
+curl -OJ "http://localhost:8080/receipts/1/export.md"
+
+# 5) Export receipt to Markdown (item-scoped route)
+curl -OJ "http://localhost:8080/items/1/receipts/1/export.md"
