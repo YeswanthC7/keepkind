@@ -72,3 +72,7 @@ curl -OJ "http://localhost:8080/receipts/1/export.md"
 
 # 5) Export receipt to Markdown (item-scoped route)
 curl -OJ "http://localhost:8080/items/1/receipts/1/export.md"
+
+Fetch a receipt for an item (item-scoped):
+```bash
+curl -s "http://localhost:8080/items/1/receipts/1" | jq

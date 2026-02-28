@@ -21,10 +21,13 @@ public class ReceiptReadController {
     @GetMapping("/{receiptId}")
     public Map getReceipt(@PathVariable long receiptId) {
         try {
+            // Cast JSONB to text so the response is stable without extra dependencies.
             return jdbc.queryForMap(
-                    "SELECT id, item_id, question, recommendation, rationale, citations, assumptions " +
-                    "FROM receipts " +
-                    "WHERE id = ?",
+                    "SELECT id, item_id, question, recommendation, rationale, " +
+                            "citations::text AS citations, assumptions::text AS assumptions, " +
+                            "chat_model, embed_model, k_used, prompt_version " +
+                            "FROM receipts " +
+                            "WHERE id = ?",
                     receiptId
             );
         } catch (EmptyResultDataAccessException e) {
@@ -33,15 +36,14 @@ public class ReceiptReadController {
     }
 
     @GetMapping("/{receiptId}/export.md")
-    public org.springframework.http.ResponseEntity<String> exportReceiptMarkdown(
-            @PathVariable long receiptId) {
-
+    public org.springframework.http.ResponseEntity<String> exportReceiptMarkdown(@PathVariable long receiptId) {
         try {
             var row = jdbc.queryForMap(
-            "SELECT id, item_id, question, recommendation, rationale, citations, assumptions, " +
-            "chat_model, embed_model, k_used, prompt_version " +
-            "FROM receipts WHERE id = ?",
-            receiptId
+                    "SELECT id, item_id, question, recommendation, rationale, " +
+                            "citations::text AS citations, assumptions::text AS assumptions, " +
+                            "chat_model, embed_model, k_used, prompt_version " +
+                            "FROM receipts WHERE id = ?",
+                    receiptId
             );
 
             StringBuilder md = new StringBuilder();
@@ -66,10 +68,9 @@ public class ReceiptReadController {
 
             md.append("## Assumptions\n");
             String assumptions = String.valueOf(row.get("assumptions"));
-            if (assumptions.equals("[]") || assumptions.equalsIgnoreCase("null")) {
+            if ("[]".equals(assumptions) || "null".equalsIgnoreCase(assumptions)) {
                 md.append("none\n\n");
             } else {
-                // assumptions is JSON like ["a","b"] — keep minimal formatting
                 md.append(assumptions).append("\n\n");
             }
 
@@ -79,16 +80,12 @@ public class ReceiptReadController {
             md.append("\n```\n");
 
             return org.springframework.http.ResponseEntity.ok()
-                    .header("Content-Disposition",
-                            "attachment; filename=keepkind-receipt-" + receiptId + ".md")
+                    .header("Content-Disposition", "attachment; filename=keepkind-receipt-" + receiptId + ".md")
                     .contentType(org.springframework.http.MediaType.valueOf("text/markdown"))
                     .body(md.toString());
 
         } catch (Exception e) {
-            throw new org.springframework.web.server.ResponseStatusException(
-                    org.springframework.http.HttpStatus.NOT_FOUND,
-                    "receipt not found"
-            );
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "receipt not found");
         }
     }
 }

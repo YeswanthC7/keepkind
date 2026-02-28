@@ -1,6 +1,5 @@
 package com.keepkind;
 
-
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
@@ -9,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import java.sql.PreparedStatement;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 
 @RestController
 @RequestMapping("/items/{itemId}")
@@ -17,7 +17,6 @@ public class ReceiptController {
     private final JdbcTemplate jdbc;
     private final OllamaEmbeddingClient embedder;
     private final OllamaChatClient chat;
-    
 
     public ReceiptController(JdbcTemplate jdbc, OllamaEmbeddingClient embedder, OllamaChatClient chat) {
         this.jdbc = jdbc;
@@ -79,19 +78,19 @@ public class ReceiptController {
 
         // Clean citations JSON for persistence (no chunk text/content)
         String citationsJson = ctx.stream()
-        .map(r -> String.format("{\"chunkId\":%s,\"sourceId\":%s,\"distance\":%s}",
-                r.get("id"), r.get("source_id"), r.get("distance")))
-        .reduce((a, b) -> a + "," + b)
-        .map(s -> "[" + s + "]")
-        .orElse("[]");
+                .map(r -> String.format("{\"chunkId\":%s,\"sourceId\":%s,\"distance\":%s}",
+                        r.get("id"), r.get("source_id"), r.get("distance")))
+                .reduce((a, b) -> a + "," + b)
+                .map(s -> "[" + s + "]")
+                .orElse("[]");
 
         List<Map<String, Object>> cleanCitations = ctx.stream()
-        .map(r -> Map.of(
-                "chunkId", r.get("id"),
-                "sourceId", r.get("source_id"),
-                "distance", r.get("distance")
-        ))
-        .toList();
+                .map(r -> Map.of(
+                        "chunkId", r.get("id"),
+                        "sourceId", r.get("source_id"),
+                        "distance", r.get("distance")
+                ))
+                .toList();
 
         String assumptionsJson = pr.assumptions().isEmpty()
                 ? "[]"
@@ -104,9 +103,9 @@ public class ReceiptController {
         KeyHolder kh = new GeneratedKeyHolder();
         jdbc.update(con -> {
             PreparedStatement ps = con.prepareStatement(
-                "INSERT INTO receipts(item_id, question, recommendation, rationale, citations, assumptions, chat_model, embed_model, k_used, prompt_version) " +
-                        "VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?)",
-                new String[]{"id"}
+                    "INSERT INTO receipts(item_id, question, recommendation, rationale, citations, assumptions, chat_model, embed_model, k_used, prompt_version) " +
+                            "VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?)",
+                    new String[]{"id"}
             );
             ps.setLong(1, itemId);
             ps.setString(2, q.trim());
@@ -123,16 +122,19 @@ public class ReceiptController {
 
         long receiptId = kh.getKey().longValue();
 
-        return Map.of(
-                "receiptId", receiptId,
-                "itemId", itemId,
-                "question", q.trim(),
-                "recommendation", pr.recommendation(),
-                "rationale", pr.rationale(),
-                "assumptions", pr.assumptions(),
-                // keep response unchanged for now (still returns full ctx rows)
-                "citations", cleanCitations
-        );
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("receiptId", receiptId);
+        resp.put("itemId", itemId);
+        resp.put("question", q.trim());
+        resp.put("recommendation", pr.recommendation());
+        resp.put("rationale", pr.rationale());
+        resp.put("assumptions", pr.assumptions());
+        resp.put("citations", cleanCitations);
+        resp.put("chat_model", "llama3.2:3b");
+        resp.put("embed_model", "nomic-embed-text");
+        resp.put("k_used", topK);
+        resp.put("prompt_version", "receipt-v1");
+        return resp;
     }
 
     private static String toPgVector(List<Double> v) {
@@ -169,20 +171,32 @@ public class ReceiptController {
     }
 
     @GetMapping("/receipts")
-    public Map listReceipts(@PathVariable long itemId) {
+    public Map listReceipts(
+            @PathVariable long itemId,
+            @RequestParam(defaultValue = "20") int limit,
+            @RequestParam(defaultValue = "0") int offset
+    ) {
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        int safeOffset = Math.max(0, offset);
+
         var rows = jdbc.queryForList(
-                "SELECT id, item_id, question, recommendation, rationale, citations, assumptions " +
+                "SELECT id, item_id, question, recommendation, rationale, " +
+                        "citations::text AS citations, assumptions::text AS assumptions, " +
+                        "chat_model, embed_model, k_used, prompt_version " +
                         "FROM receipts " +
                         "WHERE item_id = ? " +
-                        "ORDER BY id DESC",
-                itemId
+                        "ORDER BY id DESC " +
+                        "LIMIT ? OFFSET ?",
+                itemId, safeLimit, safeOffset
         );
 
-        return Map.of(
-                "itemId", itemId,
-                "count", rows.size(),
-                "receipts", rows
-        );
+        Map<String, Object> resp = new java.util.LinkedHashMap<>();
+        resp.put("itemId", itemId);
+        resp.put("limit", safeLimit);
+        resp.put("offset", safeOffset);
+        resp.put("count", rows.size());
+        resp.put("receipts", rows);
+        return resp;
     }
 
     @GetMapping("/receipts/{receiptId}/export.md")
@@ -192,11 +206,11 @@ public class ReceiptController {
     ) {
         try {
             var row = jdbc.queryForMap(
-                "SELECT id, item_id, question, recommendation, rationale, citations, assumptions, " +
-                "chat_model, embed_model, k_used, prompt_version " +
-                "FROM receipts WHERE id = ? AND item_id = ?",
-                receiptId, itemId
-        );
+                    "SELECT id, item_id, question, recommendation, rationale, citations, assumptions, " +
+                            "chat_model, embed_model, k_used, prompt_version " +
+                            "FROM receipts WHERE id = ? AND item_id = ?",
+                    receiptId, itemId
+            );
 
             StringBuilder md = new StringBuilder();
             md.append("# KeepKind Decision Receipt\n\n");
@@ -221,10 +235,9 @@ public class ReceiptController {
             md.append("## Assumptions\n");
             String assumptions = String.valueOf(row.get("assumptions"));
             if (assumptions.equals("[]") || assumptions.equalsIgnoreCase("null")) {
-            md.append("none\n\n");
+                md.append("none\n\n");
             } else {
-            // assumptions is JSON like ["a","b"] — keep minimal formatting
-            md.append(assumptions).append("\n\n");
+                md.append(assumptions).append("\n\n");
             }
 
             md.append("## Citations\n");
@@ -243,6 +256,25 @@ public class ReceiptController {
                     org.springframework.http.HttpStatus.NOT_FOUND,
                     "receipt not found for item"
             );
+        }
+    }
+
+    @GetMapping("/receipts/{receiptId}")
+    public Map getReceiptForItem(@PathVariable long itemId, @PathVariable long receiptId) {
+        try {
+                return jdbc.queryForMap(
+                        "SELECT id, item_id, question, recommendation, rationale, " +
+                                "citations::text AS citations, assumptions::text AS assumptions, " +
+                                "chat_model, embed_model, k_used, prompt_version " +
+                                "FROM receipts " +
+                                "WHERE id = ? AND item_id = ?",
+                        receiptId, itemId
+                );
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND,
+                        "receipt not found for item"
+                );
         }
     }
 }
