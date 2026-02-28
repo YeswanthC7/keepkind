@@ -6,9 +6,9 @@ import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.PreparedStatement;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.LinkedHashMap;
 
 @RestController
 @RequestMapping("/items/{itemId}")
@@ -100,23 +100,31 @@ public class ReceiptController {
                 .map(s -> "[" + s + "]")
                 .orElse("[]");
 
+        Integer nextV = jdbc.queryForObject(
+                "SELECT COALESCE(MAX(receipt_version), 0) + 1 FROM receipts WHERE item_id = ? AND deleted_at IS NULL",
+                Integer.class,
+                itemId
+        );
+        int receiptVersion = (nextV == null) ? 1 : nextV;
+
         KeyHolder kh = new GeneratedKeyHolder();
         jdbc.update(con -> {
             PreparedStatement ps = con.prepareStatement(
-                    "INSERT INTO receipts(item_id, question, recommendation, rationale, citations, assumptions, chat_model, embed_model, k_used, prompt_version) " +
-                            "VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?)",
+                    "INSERT INTO receipts(item_id, receipt_version, question, recommendation, rationale, citations, assumptions, chat_model, embed_model, k_used, prompt_version) " +
+                            "VALUES (?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?)",
                     new String[]{"id"}
             );
             ps.setLong(1, itemId);
-            ps.setString(2, q.trim());
-            ps.setString(3, pr.recommendation());
-            ps.setString(4, pr.rationale());
-            ps.setString(5, citationsJson);
-            ps.setString(6, assumptionsJson);
-            ps.setString(7, "llama3.2:3b");
-            ps.setString(8, "nomic-embed-text");
-            ps.setInt(9, topK);
-            ps.setString(10, "receipt-v1");
+            ps.setInt(2, receiptVersion);
+            ps.setString(3, q.trim());
+            ps.setString(4, pr.recommendation());
+            ps.setString(5, pr.rationale());
+            ps.setString(6, citationsJson);
+            ps.setString(7, assumptionsJson);
+            ps.setString(8, "llama3.2:3b");
+            ps.setString(9, "nomic-embed-text");
+            ps.setInt(10, topK);
+            ps.setString(11, "receipt-v1");
             return ps;
         }, kh);
 
@@ -134,6 +142,7 @@ public class ReceiptController {
         resp.put("embed_model", "nomic-embed-text");
         resp.put("k_used", topK);
         resp.put("prompt_version", "receipt-v1");
+        resp.put("receipt_version", receiptVersion);
         return resp;
     }
 
@@ -174,28 +183,83 @@ public class ReceiptController {
     public Map listReceipts(
             @PathVariable long itemId,
             @RequestParam(defaultValue = "20") int limit,
-            @RequestParam(defaultValue = "0") int offset
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(defaultValue = "false") boolean includeDeleted
     ) {
         int safeLimit = Math.max(1, Math.min(limit, 100));
         int safeOffset = Math.max(0, offset);
 
+        String where = includeDeleted ? "WHERE item_id = ?" : "WHERE item_id = ? AND deleted_at IS NULL";
+
+        Integer total = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM receipts " + where,
+                Integer.class,
+                itemId
+        );
+        int safeTotal = (total == null) ? 0 : total;
+
         var rows = jdbc.queryForList(
-                "SELECT id, item_id, created_at, question, recommendation, rationale, " +
+                "SELECT id, item_id, created_at, receipt_version, question, recommendation, rationale, " +
                         "citations::text AS citations, assumptions::text AS assumptions, " +
-                        "chat_model, embed_model, k_used, prompt_version " +
+                        "chat_model, embed_model, k_used, prompt_version, deleted_at " +
                         "FROM receipts " +
-                        "WHERE item_id = ? " +
+                        where + " " +
                         "ORDER BY created_at DESC, id DESC " +
                         "LIMIT ? OFFSET ?",
                 itemId, safeLimit, safeOffset
         );
 
-        Map<String, Object> resp = new java.util.LinkedHashMap<>();
+        Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("itemId", itemId);
         resp.put("limit", safeLimit);
         resp.put("offset", safeOffset);
+        resp.put("includeDeleted", includeDeleted);
         resp.put("count", rows.size());
+        resp.put("total", safeTotal);
         resp.put("receipts", rows);
+        return resp;
+    }
+
+    @GetMapping("/receipts/{receiptId}")
+    public Map getReceiptForItem(@PathVariable long itemId, @PathVariable long receiptId) {
+        try {
+            return jdbc.queryForMap(
+                    "SELECT id, item_id, created_at, receipt_version, question, recommendation, rationale, " +
+                            "citations::text AS citations, assumptions::text AS assumptions, " +
+                            "chat_model, embed_model, k_used, prompt_version, deleted_at " +
+                            "FROM receipts " +
+                            "WHERE id = ? AND item_id = ? AND deleted_at IS NULL",
+                    receiptId, itemId
+            );
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.NOT_FOUND,
+                    "receipt not found for item"
+            );
+        }
+    }
+
+    @DeleteMapping("/receipts/{receiptId}")
+    public Map<String, Object> softDeleteReceipt(
+            @PathVariable long itemId,
+            @PathVariable long receiptId
+    ) {
+        int updated = jdbc.update(
+                "UPDATE receipts SET deleted_at = NOW() WHERE id = ? AND item_id = ? AND deleted_at IS NULL",
+                receiptId, itemId
+        );
+
+        if (updated == 0) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.NOT_FOUND,
+                    "receipt not found or already deleted"
+            );
+        }
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("receiptId", receiptId);
+        resp.put("itemId", itemId);
+        resp.put("status", "deleted");
         return resp;
     }
 
@@ -206,9 +270,10 @@ public class ReceiptController {
     ) {
         try {
             var row = jdbc.queryForMap(
-                    "SELECT id, item_id, created_at, question, recommendation, rationale, citations, assumptions, " +
-                            "chat_model, embed_model, k_used, prompt_version " +
-                            "FROM receipts WHERE id = ? AND item_id = ?",
+                    "SELECT id, item_id, created_at, receipt_version, question, recommendation, rationale, " +
+                            "citations::text AS citations, assumptions::text AS assumptions, " +
+                            "chat_model, embed_model, k_used, prompt_version, deleted_at " +
+                            "FROM receipts WHERE id = ? AND item_id = ? AND deleted_at IS NULL",
                     receiptId, itemId
             );
 
@@ -217,6 +282,7 @@ public class ReceiptController {
             md.append("**Receipt ID:** ").append(row.get("id")).append("\n\n");
             md.append("**Item ID:** ").append(row.get("item_id")).append("\n\n");
             md.append("**Created At:** ").append(row.get("created_at")).append("\n\n");
+            md.append("**Receipt Version:** ").append(row.get("receipt_version")).append("\n\n");
 
             md.append("## Generation metadata\n");
             md.append("- chat_model: ").append(row.get("chat_model")).append("\n");
@@ -257,25 +323,6 @@ public class ReceiptController {
                     org.springframework.http.HttpStatus.NOT_FOUND,
                     "receipt not found for item"
             );
-        }
-    }
-
-    @GetMapping("/receipts/{receiptId}")
-    public Map getReceiptForItem(@PathVariable long itemId, @PathVariable long receiptId) {
-        try {
-                return jdbc.queryForMap(
-                        "SELECT id, item_id, created_at, question, recommendation, rationale, " +
-                                "citations::text AS citations, assumptions::text AS assumptions, " +
-                                "chat_model, embed_model, k_used, prompt_version " +
-                                "FROM receipts " +
-                                "WHERE id = ? AND item_id = ?",
-                        receiptId, itemId
-                );
-        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
-                throw new org.springframework.web.server.ResponseStatusException(
-                        org.springframework.http.HttpStatus.NOT_FOUND,
-                        "receipt not found for item"
-                );
         }
     }
 }
