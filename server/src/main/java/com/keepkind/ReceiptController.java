@@ -180,12 +180,12 @@ public class ReceiptController {
         int safeOffset = Math.max(0, offset);
 
         var rows = jdbc.queryForList(
-                "SELECT id, item_id, question, recommendation, rationale, " +
+                "SELECT id, item_id, created_at, question, recommendation, rationale, " +
                         "citations::text AS citations, assumptions::text AS assumptions, " +
                         "chat_model, embed_model, k_used, prompt_version " +
                         "FROM receipts " +
                         "WHERE item_id = ? " +
-                        "ORDER BY id DESC " +
+                        "ORDER BY created_at DESC, id DESC " +
                         "LIMIT ? OFFSET ?",
                 itemId, safeLimit, safeOffset
         );
@@ -206,7 +206,7 @@ public class ReceiptController {
     ) {
         try {
             var row = jdbc.queryForMap(
-                    "SELECT id, item_id, question, recommendation, rationale, citations, assumptions, " +
+                    "SELECT id, item_id, created_at, question, recommendation, rationale, citations, assumptions, " +
                             "chat_model, embed_model, k_used, prompt_version " +
                             "FROM receipts WHERE id = ? AND item_id = ?",
                     receiptId, itemId
@@ -216,6 +216,7 @@ public class ReceiptController {
             md.append("# KeepKind Decision Receipt\n\n");
             md.append("**Receipt ID:** ").append(row.get("id")).append("\n\n");
             md.append("**Item ID:** ").append(row.get("item_id")).append("\n\n");
+            md.append("**Created At:** ").append(row.get("created_at")).append("\n\n");
 
             md.append("## Generation metadata\n");
             md.append("- chat_model: ").append(row.get("chat_model")).append("\n");
@@ -263,7 +264,7 @@ public class ReceiptController {
     public Map getReceiptForItem(@PathVariable long itemId, @PathVariable long receiptId) {
         try {
                 return jdbc.queryForMap(
-                        "SELECT id, item_id, question, recommendation, rationale, " +
+                        "SELECT id, item_id, created_at, question, recommendation, rationale, " +
                                 "citations::text AS citations, assumptions::text AS assumptions, " +
                                 "chat_model, embed_model, k_used, prompt_version " +
                                 "FROM receipts " +

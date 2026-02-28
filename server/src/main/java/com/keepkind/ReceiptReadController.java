@@ -23,7 +23,7 @@ public class ReceiptReadController {
         try {
             // Cast JSONB to text so the response is stable without extra dependencies.
             return jdbc.queryForMap(
-                    "SELECT id, item_id, question, recommendation, rationale, " +
+                    "SELECT id, item_id, created_at, question, recommendation, rationale, " +
                             "citations::text AS citations, assumptions::text AS assumptions, " +
                             "chat_model, embed_model, k_used, prompt_version " +
                             "FROM receipts " +
@@ -39,7 +39,7 @@ public class ReceiptReadController {
     public org.springframework.http.ResponseEntity<String> exportReceiptMarkdown(@PathVariable long receiptId) {
         try {
             var row = jdbc.queryForMap(
-                    "SELECT id, item_id, question, recommendation, rationale, " +
+                    "SELECT id, item_id, created_at, question, recommendation, rationale, " +
                             "citations::text AS citations, assumptions::text AS assumptions, " +
                             "chat_model, embed_model, k_used, prompt_version " +
                             "FROM receipts WHERE id = ?",
@@ -50,6 +50,7 @@ public class ReceiptReadController {
             md.append("# KeepKind Decision Receipt\n\n");
             md.append("**Receipt ID:** ").append(row.get("id")).append("\n\n");
             md.append("**Item ID:** ").append(row.get("item_id")).append("\n\n");
+            md.append("**Created At:** ").append(row.get("created_at")).append("\n\n");
 
             md.append("## Generation metadata\n");
             md.append("- chat_model: ").append(row.get("chat_model")).append("\n");
