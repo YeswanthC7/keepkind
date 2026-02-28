@@ -220,6 +220,27 @@ public class ReceiptController {
         return resp;
     }
 
+    @GetMapping("/receipts/latest")
+    public Map getLatestReceiptForItem(@PathVariable long itemId) {
+        try {
+            return jdbc.queryForMap(
+                    "SELECT id, item_id, created_at, receipt_version, question, recommendation, rationale, " +
+                            "citations::text AS citations, assumptions::text AS assumptions, " +
+                            "chat_model, embed_model, k_used, prompt_version, deleted_at " +
+                            "FROM receipts " +
+                            "WHERE item_id = ? AND deleted_at IS NULL " +
+                            "ORDER BY created_at DESC, id DESC " +
+                            "LIMIT 1",
+                    itemId
+            );
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.NOT_FOUND,
+                    "no receipts found for item"
+            );
+        }
+    }
+
     @GetMapping("/receipts/{receiptId}")
     public Map getReceiptForItem(@PathVariable long itemId, @PathVariable long receiptId) {
         try {
