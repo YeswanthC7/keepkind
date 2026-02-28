@@ -38,15 +38,22 @@ public class ReceiptReadController {
 
         try {
             var row = jdbc.queryForMap(
-                    "SELECT id, item_id, question, recommendation, rationale, citations, assumptions " +
-                    "FROM receipts WHERE id = ?",
-                    receiptId
+            "SELECT id, item_id, question, recommendation, rationale, citations, assumptions, " +
+            "chat_model, embed_model, k_used, prompt_version " +
+            "FROM receipts WHERE id = ?",
+            receiptId
             );
 
             StringBuilder md = new StringBuilder();
             md.append("# KeepKind Decision Receipt\n\n");
             md.append("**Receipt ID:** ").append(row.get("id")).append("\n\n");
             md.append("**Item ID:** ").append(row.get("item_id")).append("\n\n");
+
+            md.append("## Generation metadata\n");
+            md.append("- chat_model: ").append(row.get("chat_model")).append("\n");
+            md.append("- embed_model: ").append(row.get("embed_model")).append("\n");
+            md.append("- k_used: ").append(row.get("k_used")).append("\n");
+            md.append("- prompt_version: ").append(row.get("prompt_version")).append("\n\n");
 
             md.append("## Question\n");
             md.append(row.get("question")).append("\n\n");
@@ -58,7 +65,13 @@ public class ReceiptReadController {
             md.append(row.get("rationale")).append("\n\n");
 
             md.append("## Assumptions\n");
-            md.append(row.get("assumptions")).append("\n\n");
+            String assumptions = String.valueOf(row.get("assumptions"));
+            if (assumptions.equals("[]") || assumptions.equalsIgnoreCase("null")) {
+                md.append("none\n\n");
+            } else {
+                // assumptions is JSON like ["a","b"] — keep minimal formatting
+                md.append(assumptions).append("\n\n");
+            }
 
             md.append("## Citations\n");
             md.append("```json\n");
