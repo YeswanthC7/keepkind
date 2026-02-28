@@ -76,3 +76,27 @@ curl -OJ "http://localhost:8080/items/1/receipts/1/export.md"
 Fetch a receipt for an item (item-scoped):
 ```bash
 curl -s "http://localhost:8080/items/1/receipts/1" | jq
+
+## Decision receipts (Phase 3)
+
+```bash
+# Create a receipt (stores in DB)
+curl -s -X POST "http://localhost:8080/items/1/receipt?q=What%20should%20I%20do%20with%20this%20item%3F&k=5" | jq
+
+# List receipts (pagination + total + optional includeDeleted)
+curl -s "http://localhost:8080/items/1/receipts?limit=10&offset=0" | jq
+curl -s "http://localhost:8080/items/1/receipts?limit=10&offset=0&includeDeleted=true" | jq
+
+# Latest receipt
+curl -s "http://localhost:8080/items/1/receipts/latest" | jq
+
+# Fetch receipt (item-scoped + global)
+curl -s "http://localhost:8080/items/1/receipts/1" | jq
+curl -s "http://localhost:8080/receipts/1" | jq
+
+# Soft delete a receipt
+curl -s -X DELETE "http://localhost:8080/items/1/receipts/1" | jq
+
+# Export Markdown (global + item-scoped)
+curl -OJ "http://localhost:8080/receipts/1/export.md"
+curl -OJ "http://localhost:8080/items/1/receipts/1/export.md"

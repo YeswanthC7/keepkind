@@ -159,3 +159,28 @@ Design Principles
 - Deterministic retrieval before generation
 - Structured output enforced via prompt contract
 - Receipts are durable artifacts, not ephemeral chat responses
+
+Update “Current milestone status” to reflect Phase 3 is complete (listing/retrieval/export + quality layer).
+
+Update “Receipts” section to document:
+
+created_at ordering
+
+receipt_version per item
+
+deleted_at soft delete + includeDeleted toggle
+
+latest endpoint
+
+Update API contracts list to include:
+
+GET /items/{itemId}/receipts (limit/offset/includeDeleted, returns total)
+
+GET /items/{itemId}/receipts/latest
+
+GET /items/{itemId}/receipts/{receiptId}
+
+DELETE /items/{itemId}/receipts/{receiptId}
+
+plus the existing global /receipts/{id} + exports
+END
