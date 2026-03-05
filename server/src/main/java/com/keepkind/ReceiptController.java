@@ -6,6 +6,7 @@ import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.PreparedStatement;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,141 @@ public class ReceiptController {
         this.jdbc = jdbc;
         this.embedder = embedder;
         this.chat = chat;
+    }
+
+    /**
+     * Web MVP: generate a single "decision artifact" containing ALL 4 plans
+     * (maintain/repair/resell/recycle) + citations + assumptions.
+     *
+     * Does NOT persist to receipts table.
+     */
+    @PostMapping("/decision")
+    public Map<String, Object> createDecision(
+            @PathVariable long itemId,
+            @RequestParam String q,
+            @RequestParam(defaultValue = "5") int k
+    ) {
+        if (q == null || q.trim().isEmpty()) throw new IllegalArgumentException("q is required");
+        int topK = Math.max(1, Math.min(k, 10));
+
+        // Retrieve context (same retrieval logic as /ask and /receipt)
+        var qVec = embedder.embedOne(q.trim());
+        String pgVec = toPgVector(qVec);
+
+        List<Map<String, Object>> ctx = jdbc.queryForList(
+                "SELECT id, source_id, chunk_index, content, (embedding <=> ?::vector) AS distance " +
+                        "FROM chunks " +
+                        "WHERE item_id = ? AND embedding IS NOT NULL " +
+                        "ORDER BY embedding <=> ?::vector " +
+                        "LIMIT ?",
+                pgVec, itemId, pgVec, topK
+        );
+
+        StringBuilder contextBlock = new StringBuilder();
+        for (Map<String, Object> row : ctx) {
+            contextBlock.append("CHUNK ")
+                    .append(row.get("id"))
+                    .append(" (source ")
+                    .append(row.get("source_id"))
+                    .append("):\n")
+                    .append(row.get("content"))
+                    .append("\n\n");
+        }
+
+        String system = """
+                You are KeepKind. Generate a decision artifact using ONLY the provided context.
+
+                Output MUST be in this exact format and with these exact section headers:
+
+                SUMMARY: <one short line describing the item + situation>
+                CONFIDENCE: <number 0.00 to 1.00>
+
+                MAINTAIN_STEPS:
+                - <step>
+                MAINTAIN_WHAT_CHANGES_THIS:
+                - <condition>
+
+                REPAIR_STEPS:
+                - <step>
+                REPAIR_WHAT_CHANGES_THIS:
+                - <condition>
+
+                RESELL_STEPS:
+                - <step>
+                RESELL_WHAT_CHANGES_THIS:
+                - <condition>
+
+                RECYCLE_STEPS:
+                - <step>
+                RECYCLE_WHAT_CHANGES_THIS:
+                - <condition>
+
+                ASSUMPTIONS:
+                - <assumption>
+                (or a single line "- none")
+
+                Rules:
+                - Use only facts supported by context. If context is insufficient, be explicit in steps (e.g., "I don't have enough information from the provided sources.").
+                - Keep each bullet short (<= 1 sentence).
+                - Provide 2-6 bullets per STEPS and 1-3 bullets per WHAT_CHANGES_THIS.
+                - Do NOT invent store names, prices, or locations.
+                """;
+
+        String user = "Question:\n" + q.trim() + "\n\nContext:\n" + contextBlock;
+        String out = chat.chat(system, user);
+
+        ParsedDecision pd = ParsedDecision.parse(out);
+
+        List<Map<String, Object>> cleanCitations = ctx.stream()
+                .map(r -> Map.of(
+                        "chunkId", r.get("id"),
+                        "sourceId", r.get("source_id"),
+                        "distance", r.get("distance")
+                ))
+                .toList();
+
+        // Build response (avoid Map.of with lots of keys)
+        Map<String, Object> maintain = new LinkedHashMap<>();
+        maintain.put("title", "Maintain");
+        maintain.put("steps", pd.maintainSteps);
+        maintain.put("whatChangesThis", pd.maintainWhatChangesThis);
+
+        Map<String, Object> repair = new LinkedHashMap<>();
+        repair.put("title", "Repair");
+        repair.put("steps", pd.repairSteps);
+        repair.put("whatChangesThis", pd.repairWhatChangesThis);
+
+        Map<String, Object> resell = new LinkedHashMap<>();
+        resell.put("title", "Resell");
+        resell.put("steps", pd.resellSteps);
+        resell.put("whatChangesThis", pd.resellWhatChangesThis);
+
+        Map<String, Object> recycle = new LinkedHashMap<>();
+        recycle.put("title", "Recycle");
+        recycle.put("steps", pd.recycleSteps);
+        recycle.put("whatChangesThis", pd.recycleWhatChangesThis);
+
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("maintain", maintain);
+        options.put("repair", repair);
+        options.put("resell", resell);
+        options.put("recycle", recycle);
+
+        Map<String, Object> generation = new LinkedHashMap<>();
+        generation.put("chatModel", "llama3.2:3b");
+        generation.put("embedModel", "nomic-embed-text");
+        generation.put("kUsed", topK);
+        generation.put("promptVersion", "decision-v1");
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("itemId", itemId);
+        resp.put("summary", pd.summary);
+        resp.put("confidence", pd.confidence);
+        resp.put("options", options);
+        resp.put("citations", cleanCitations);
+        resp.put("assumptions", pd.assumptions);
+        resp.put("generation", generation);
+        return resp;
     }
 
     @PostMapping("/receipt")
@@ -176,6 +312,150 @@ public class ReceiptController {
                     : List.of(ass.split("\\s*,\\s*"));
 
             return new ParsedReceipt(rec, rat, assumptions);
+        }
+    }
+
+    static class ParsedDecision {
+        String summary = "Item decision";
+        double confidence = 0.50;
+
+        List<String> maintainSteps = List.of("I don't have enough information in the provided sources.");
+        List<String> maintainWhatChangesThis = List.of("Add more item details or sources.");
+
+        List<String> repairSteps = List.of("I don't have enough information in the provided sources.");
+        List<String> repairWhatChangesThis = List.of("Add more item details or sources.");
+
+        List<String> resellSteps = List.of("I don't have enough information in the provided sources.");
+        List<String> resellWhatChangesThis = List.of("Add more item details or sources.");
+
+        List<String> recycleSteps = List.of("I don't have enough information in the provided sources.");
+        List<String> recycleWhatChangesThis = List.of("Add more item details or sources.");
+
+        List<String> assumptions = List.of();
+
+        static ParsedDecision parse(String s) {
+            ParsedDecision pd = new ParsedDecision();
+
+            String current = null;
+            List<String> buf = new ArrayList<>();
+
+            // Temp holders
+            List<String> ms = null, mw = null, rs = null, rw = null, ss = null, sw = null, cs = null, cw = null, a = null;
+
+            for (String raw : s.split("\n")) {
+                String line = raw.trim();
+                if (line.isEmpty()) continue;
+
+                if (line.startsWith("SUMMARY:")) {
+                    pd.summary = line.substring("SUMMARY:".length()).trim();
+                    continue;
+                }
+                if (line.startsWith("CONFIDENCE:")) {
+                    String v = line.substring("CONFIDENCE:".length()).trim();
+                    pd.confidence = parseConfidence(v);
+                    continue;
+                }
+
+                // Section headers
+                if (isHeader(line)) {
+                    // flush previous buffer
+                    if (current != null) {
+                        List<String> flushed = normalizeBullets(buf);
+                        if ("MAINTAIN_STEPS".equals(current)) ms = flushed;
+                        if ("MAINTAIN_WHAT_CHANGES_THIS".equals(current)) mw = flushed;
+                        if ("REPAIR_STEPS".equals(current)) rs = flushed;
+                        if ("REPAIR_WHAT_CHANGES_THIS".equals(current)) rw = flushed;
+                        if ("RESELL_STEPS".equals(current)) ss = flushed;
+                        if ("RESELL_WHAT_CHANGES_THIS".equals(current)) sw = flushed;
+                        if ("RECYCLE_STEPS".equals(current)) cs = flushed;
+                        if ("RECYCLE_WHAT_CHANGES_THIS".equals(current)) cw = flushed;
+                        if ("ASSUMPTIONS".equals(current)) a = normalizeAssumptions(flushed);
+                    }
+                    current = line.substring(0, line.length() - 1); // remove trailing ':'
+                    buf = new ArrayList<>();
+                    continue;
+                }
+
+                // bullet line
+                buf.add(line);
+            }
+
+            // flush last
+            if (current != null) {
+                List<String> flushed = normalizeBullets(buf);
+                if ("MAINTAIN_STEPS".equals(current)) ms = flushed;
+                if ("MAINTAIN_WHAT_CHANGES_THIS".equals(current)) mw = flushed;
+                if ("REPAIR_STEPS".equals(current)) rs = flushed;
+                if ("REPAIR_WHAT_CHANGES_THIS".equals(current)) rw = flushed;
+                if ("RESELL_STEPS".equals(current)) ss = flushed;
+                if ("RESELL_WHAT_CHANGES_THIS".equals(current)) sw = flushed;
+                if ("RECYCLE_STEPS".equals(current)) cs = flushed;
+                if ("RECYCLE_WHAT_CHANGES_THIS".equals(current)) cw = flushed;
+                if ("ASSUMPTIONS".equals(current)) a = normalizeAssumptions(flushed);
+            }
+
+            // Apply defaults if missing
+            if (ms != null && !ms.isEmpty()) pd.maintainSteps = ms;
+            if (mw != null && !mw.isEmpty()) pd.maintainWhatChangesThis = mw;
+
+            if (rs != null && !rs.isEmpty()) pd.repairSteps = rs;
+            if (rw != null && !rw.isEmpty()) pd.repairWhatChangesThis = rw;
+
+            if (ss != null && !ss.isEmpty()) pd.resellSteps = ss;
+            if (sw != null && !sw.isEmpty()) pd.resellWhatChangesThis = sw;
+
+            if (cs != null && !cs.isEmpty()) pd.recycleSteps = cs;
+            if (cw != null && !cw.isEmpty()) pd.recycleWhatChangesThis = cw;
+
+            if (a != null) pd.assumptions = a;
+
+            // Ensure summary not empty
+            if (pd.summary == null || pd.summary.isBlank()) pd.summary = "Item decision";
+            // Clamp confidence
+            if (pd.confidence < 0.0) pd.confidence = 0.0;
+            if (pd.confidence > 1.0) pd.confidence = 1.0;
+
+            return pd;
+        }
+
+        private static boolean isHeader(String line) {
+            return line.endsWith(":") && (
+                    line.equals("MAINTAIN_STEPS:") ||
+                            line.equals("MAINTAIN_WHAT_CHANGES_THIS:") ||
+                            line.equals("REPAIR_STEPS:") ||
+                            line.equals("REPAIR_WHAT_CHANGES_THIS:") ||
+                            line.equals("RESELL_STEPS:") ||
+                            line.equals("RESELL_WHAT_CHANGES_THIS:") ||
+                            line.equals("RECYCLE_STEPS:") ||
+                            line.equals("RECYCLE_WHAT_CHANGES_THIS:") ||
+                            line.equals("ASSUMPTIONS:")
+            );
+        }
+
+        private static List<String> normalizeBullets(List<String> lines) {
+            List<String> out = new ArrayList<>();
+            for (String l : lines) {
+                String t = l.trim();
+                if (t.startsWith("-")) t = t.substring(1).trim();
+                if (!t.isEmpty()) out.add(t);
+            }
+            return out;
+        }
+
+        private static List<String> normalizeAssumptions(List<String> bullets) {
+            if (bullets.size() == 1 && bullets.get(0).equalsIgnoreCase("none")) return List.of();
+            return bullets;
+        }
+
+        private static double parseConfidence(String v) {
+            try {
+                double d = Double.parseDouble(v);
+                if (d < 0.0) return 0.0;
+                if (d > 1.0) return 1.0;
+                return d;
+            } catch (Exception e) {
+                return 0.50;
+            }
         }
     }
 
