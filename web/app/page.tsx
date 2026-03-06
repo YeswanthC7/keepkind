@@ -28,11 +28,12 @@ type DecisionArtifact = {
 type LocalReceipt = {
   id: string;
   createdAt: string;
-  title: string; // UI title we control (do NOT trust model for location)
+  title: string;
+  photo?: string;
   artifact: DecisionArtifact;
 };
 
-type ItemType = "phone" | "laptop" | "clothing" | "appliance" | "other";
+type ItemType = "phone" | "laptop" | "clothing" | "appliance" | "other" | "unknown";
 
 type ZipMeta = {
   zip: string;
@@ -43,6 +44,7 @@ type ZipMeta = {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
 const STORAGE_KEY = "keepkind.receipts.v1";
+const FIXED_DECISION_QUESTION = "What should I do with this item?";
 
 function uuid(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -71,7 +73,6 @@ function isBlank(s: string | null | undefined): boolean {
 }
 
 function normalizeZip(zip: string): string {
-  // Keep digits only, allow 5-digit ZIP (MVP)
   const digits = (zip ?? "").replace(/\D/g, "");
   return digits.slice(0, 5);
 }
@@ -96,7 +97,8 @@ function buildUiTitle(params: {
   condition: string;
   zipMeta: ZipMeta | null;
 }): string {
-  const typeLabel = params.itemType === "other" ? "item" : params.itemType;
+  const typeLabel =
+    params.itemType === "unknown" || params.itemType === "other" ? "item" : params.itemType;
   const parts: string[] = [];
 
   const bm = [params.brand?.trim(), params.model?.trim()].filter(Boolean).join(" ");
@@ -108,8 +110,77 @@ function buildUiTitle(params: {
   const loc = formatLocation(params.zipMeta);
   if (loc) parts.push(`(${loc})`);
 
-  // Example: "iPhone 6 broken (Round Rock, TX 78665)"
   return parts.join(" ");
+}
+
+function detectItemTypeFromFile(file: File): ItemType {
+  const text = `${file.name} ${file.type}`.toLowerCase();
+
+  if (
+    text.includes("iphone") ||
+    text.includes("android") ||
+    text.includes("phone") ||
+    text.includes("mobile") ||
+    text.includes("galaxy") ||
+    text.includes("pixel")
+  ) {
+    return "phone";
+  }
+
+  if (
+    text.includes("laptop") ||
+    text.includes("macbook") ||
+    text.includes("notebook") ||
+    text.includes("thinkpad") ||
+    text.includes("xps")
+  ) {
+    return "laptop";
+  }
+
+  if (
+    text.includes("shirt") ||
+    text.includes("jacket") ||
+    text.includes("jeans") ||
+    text.includes("dress") ||
+    text.includes("clothing") ||
+    text.includes("shoe") ||
+    text.includes("sneaker")
+  ) {
+    return "clothing";
+  }
+
+  if (
+    text.includes("appliance") ||
+    text.includes("microwave") ||
+    text.includes("blender") ||
+    text.includes("vacuum") ||
+    text.includes("fridge") ||
+    text.includes("refrigerator") ||
+    text.includes("washer") ||
+    text.includes("washing machine") ||
+    text.includes("dryer")
+  ) {
+    return "appliance";
+  }
+
+  return "unknown";
+}
+
+function formatItemTypeLabel(itemType: ItemType): string {
+  switch (itemType) {
+    case "phone":
+      return "Phone";
+    case "laptop":
+      return "Laptop";
+    case "clothing":
+      return "Clothing";
+    case "appliance":
+      return "Appliance";
+    case "other":
+      return "Other";
+    default:
+      return "Couldn’t identify item from photo yet";
+  }
 }
 
 export default function Home() {
@@ -117,11 +188,12 @@ export default function Home() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DecisionOptionKey>("maintain");
 
-  const [question, setQuestion] = useState<string>("What should I do with this item?");
   const [k, setK] = useState<number>(5);
 
-  // Item details (MVP)
-  const [itemType, setItemType] = useState<ItemType>("phone");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  const [itemType, setItemType] = useState<ItemType>("unknown");
   const [brand, setBrand] = useState<string>("");
   const [model, setModel] = useState<string>("");
   const [purchaseYear, setPurchaseYear] = useState<string>("");
@@ -129,7 +201,6 @@ export default function Home() {
   const [issue, setIssue] = useState<string>("");
   const [zip, setZip] = useState<string>("");
 
-  // ZIP lookup (free, no key)
   const [zipMeta, setZipMeta] = useState<ZipMeta | null>(null);
   const [zipStatus, setZipStatus] = useState<"idle" | "loading" | "ok" | "invalid" | "not_found" | "error">("idle");
 
@@ -150,7 +221,12 @@ export default function Home() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(receipts));
   }, [receipts]);
 
-  // Live ZIP → City/State lookup using Zippopotam.us (free)
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
   useEffect(() => {
     const z = normalizeZip(zip);
     if (!z) {
@@ -180,6 +256,7 @@ export default function Home() {
           setZipStatus("error");
           return;
         }
+
         const data = (await resp.json()) as any;
         const place = Array.isArray(data?.places) ? data.places[0] : null;
 
@@ -212,12 +289,16 @@ export default function Home() {
   const active = useMemo(() => receipts.find((r) => r.id === activeId) ?? null, [receipts, activeId]);
 
   function resetForm() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+
     setActiveId(null);
     setActiveTab("maintain");
-    setQuestion("What should I do with this item?");
     setK(5);
 
-    setItemType("phone");
+    setSelectedFile(null);
+    setPreviewUrl(null);
+
+    setItemType("unknown");
     setBrand("");
     setModel("");
     setPurchaseYear("");
@@ -229,10 +310,23 @@ export default function Home() {
     setZipStatus("idle");
 
     setError(null);
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function newReceipt() {
     resetForm();
+  }
+
+  function onFileSelected(file: File) {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+
+    setSelectedFile(file);
+    setPreviewUrl(URL.createObjectURL(file));
+    setItemType(detectItemTypeFromFile(file));
+    setBrand("");
+    setModel("");
+    setError(null);
   }
 
   async function ensureItem(): Promise<number> {
@@ -279,9 +373,9 @@ export default function Home() {
   }
 
   async function runDecision(itemId: number): Promise<DecisionArtifact> {
-    const url = `${API_BASE}/items/${itemId}/decision?q=${encodeURIComponent(question)}&k=${encodeURIComponent(
-      String(clamp(k, 1, 10))
-    )}`;
+    const url = `${API_BASE}/items/${itemId}/decision?q=${encodeURIComponent(
+      FIXED_DECISION_QUESTION
+    )}&k=${encodeURIComponent(String(clamp(k, 1, 10)))}`;
     const resp = await fetch(url, { method: "POST" });
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -294,10 +388,12 @@ export default function Home() {
     const lines: string[] = [];
 
     lines.push(`User uploaded an item photo (filename: ${fileName}).`);
-    lines.push(`User question: ${question.trim() || "What should I do with this item?"}`);
+    lines.push(`User question: ${FIXED_DECISION_QUESTION}`);
     lines.push("");
     lines.push("User-provided details:");
-    lines.push(`- item_type: ${itemType}`);
+
+    if (itemType === "unknown") lines.push("- item_type: unknown_from_photo");
+    else lines.push(`- item_type: ${itemType}`);
 
     if (!isBlank(brand)) lines.push(`- brand: ${brand.trim()}`);
     if (!isBlank(model)) lines.push(`- model: ${model.trim()}`);
@@ -320,21 +416,27 @@ export default function Home() {
     lines.push("Output requirements:");
     lines.push("- Provide maintain, repair, resell, recycle options as separate receipts.");
     lines.push("- Be concise and practical.");
-    lines.push("- If missing info, explicitly ask for it under assumptions / what changes this.");
+    lines.push("- If the item type is unknown, say so clearly instead of pretending it is known.");
+    lines.push("- If more information would change the recommendation, mention it under 'what would change the recommendation'.");
     lines.push("- If repair is chosen, prefer nearby options if location is present; otherwise ask for zip.");
     lines.push("- Do NOT guess a state/city from zip; use provided location only.");
 
     return lines.join("\n");
   }
 
-  async function onUpload(file: File) {
+  async function generateReceipt() {
+    if (!selectedFile) {
+      setError("Please upload a photo first.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
+
     try {
       const itemId = await ensureItem();
 
-      // Seed a source with details so retrieval isn't empty
-      const seed = buildSeedText(file.name);
+      const seed = buildSeedText(selectedFile.name);
       const { sourceId } = await attachTextSource(itemId, seed);
       await embedSource(sourceId);
 
@@ -343,7 +445,6 @@ export default function Home() {
       const id = uuid();
       const createdAt = new Date().toISOString();
 
-      // IMPORTANT: UI title is controlled by us (prevents wrong “Florida” etc.)
       const title = buildUiTitle({
         itemType,
         brand,
@@ -352,7 +453,13 @@ export default function Home() {
         zipMeta: zipStatus === "ok" ? zipMeta : null,
       });
 
-      const rec: LocalReceipt = { id, createdAt, title, artifact };
+      const rec: LocalReceipt = {
+        id,
+        createdAt,
+        title,
+        photo: previewUrl ?? undefined,
+        artifact,
+      };
 
       setReceipts((prev) => [rec, ...prev]);
       setActiveId(id);
@@ -362,7 +469,6 @@ export default function Home() {
       setError(msg);
     } finally {
       setLoading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
@@ -374,7 +480,8 @@ export default function Home() {
     }
   }
 
-  const showBrandModel = itemType === "phone" || itemType === "laptop" || itemType === "appliance";
+  const showBrandModel =
+    selectedFile !== null && (itemType === "phone" || itemType === "laptop" || itemType === "appliance");
 
   return (
     <div className="min-h-screen bg-white text-zinc-950">
@@ -449,124 +556,11 @@ export default function Home() {
             {!active && (
               <div className="rounded-xl border border-zinc-200 bg-white p-6">
                 <div className="text-sm font-medium">Get started</div>
-                <div className="mt-1 text-sm text-zinc-600">Upload a photo. Add a few details so results are specific.</div>
+                <div className="mt-1 text-sm text-zinc-600">
+                  Upload a photo first. Then review a few details before generating the receipt.
+                </div>
 
                 <div className="mt-4 grid gap-4">
-                  <div className="grid gap-2">
-                    <label className="text-xs font-medium text-zinc-700">Item type</label>
-                    <select
-                      value={itemType}
-                      onChange={(e) => setItemType(e.target.value as ItemType)}
-                      className="w-56 rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                    >
-                      <option value="phone">Phone</option>
-                      <option value="laptop">Laptop</option>
-                      <option value="clothing">Clothing</option>
-                      <option value="appliance">Appliance</option>
-                      <option value="other">Other</option>
-                    </select>
-                  </div>
-
-                  {showBrandModel && (
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div className="grid gap-2">
-                        <label className="text-xs font-medium text-zinc-700">Brand</label>
-                        <input
-                          value={brand}
-                          onChange={(e) => setBrand(e.target.value)}
-                          className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                          placeholder="Apple / Samsung / Dell / LG"
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <label className="text-xs font-medium text-zinc-700">Model</label>
-                        <input
-                          value={model}
-                          onChange={(e) => setModel(e.target.value)}
-                          className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                          placeholder="iPhone 13 / Galaxy S22 / XPS 13"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="grid gap-2">
-                      <label className="text-xs font-medium text-zinc-700">Purchase year (optional)</label>
-                      <input
-                        value={purchaseYear}
-                        onChange={(e) => setPurchaseYear(e.target.value)}
-                        className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                        placeholder="2022"
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <label className="text-xs font-medium text-zinc-700">Zip code (optional, for repair)</label>
-                      <input
-                        value={zip}
-                        onChange={(e) => setZip(e.target.value)}
-                        className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                        placeholder="75080"
-                        inputMode="numeric"
-                      />
-                      <div className="text-xs text-zinc-500">
-                        {zipStatus === "idle" && <span>&nbsp;</span>}
-                        {zipStatus === "loading" && <span>Looking up location…</span>}
-                        {zipStatus === "invalid" && <span>Enter a 5-digit US ZIP.</span>}
-                        {zipStatus === "not_found" && <span>ZIP not found.</span>}
-                        {zipStatus === "error" && <span>Couldn’t verify ZIP right now.</span>}
-                        {zipStatus === "ok" && zipMeta && <span>{zipMeta.city}, {zipMeta.state}</span>}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="grid gap-2">
-                      <label className="text-xs font-medium text-zinc-700">Condition</label>
-                      <select
-                        value={condition}
-                        onChange={(e) => setCondition(e.target.value)}
-                        className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                      >
-                        <option value="like_new">Like new</option>
-                        <option value="good">Good</option>
-                        <option value="worn">Worn</option>
-                        <option value="broken">Broken</option>
-                      </select>
-                    </div>
-                    <div className="grid gap-2">
-                      <label className="text-xs font-medium text-zinc-700">Issue / symptoms (optional)</label>
-                      <input
-                        value={issue}
-                        onChange={(e) => setIssue(e.target.value)}
-                        className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                        placeholder="Cracked screen / won’t charge / torn seam"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid gap-2">
-                    <label className="text-xs font-medium text-zinc-700">Question</label>
-                    <input
-                      value={question}
-                      onChange={(e) => setQuestion(e.target.value)}
-                      className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                      placeholder="What should I do with this item?"
-                    />
-                  </div>
-
-                  <div className="grid gap-2">
-                    <label className="text-xs font-medium text-zinc-700">Top-k context</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={10}
-                      value={k}
-                      onChange={(e) => setK(Number(e.target.value))}
-                      className="w-32 rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                    />
-                  </div>
-
                   <div className="flex items-center gap-3">
                     <input
                       ref={fileInputRef}
@@ -575,7 +569,7 @@ export default function Home() {
                       className="hidden"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
-                        if (f) onUpload(f);
+                        if (f) onFileSelected(f);
                       }}
                     />
                     <button
@@ -583,10 +577,140 @@ export default function Home() {
                       onClick={() => fileInputRef.current?.click()}
                       className="rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
                     >
-                      {loading ? "Generating…" : "Upload an item"}
+                      {selectedFile ? "Replace photo" : "Upload photo"}
                     </button>
-                    <div className="text-xs text-zinc-500">MVP: details → seeded source → citations.</div>
+                    <div className="text-xs text-zinc-500">
+                      {selectedFile ? `Selected: ${selectedFile.name}` : "No photo selected yet."}
+                    </div>
                   </div>
+
+                  {selectedFile && (
+                    <>
+                      {previewUrl && (
+                        <div className="grid gap-2">
+                          <label className="text-xs font-medium text-zinc-700">Uploaded photo</label>
+                          <img
+                            src={previewUrl}
+                            alt="Uploaded item"
+                            className="max-h-[280px] w-full max-w-[360px] rounded-lg border border-zinc-200 object-contain"
+                          />
+                        </div>
+                      )}
+
+                      <div className="grid gap-2">
+                        <label className="text-xs font-medium text-zinc-700">Detected item type</label>
+                        <div className="w-full max-w-[360px] rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900">
+                          {formatItemTypeLabel(itemType)}
+                        </div>
+                        <div className="text-xs text-zinc-500">
+                          {itemType === "unknown"
+                            ? "Current MVP cannot reliably read the image itself yet."
+                            : "Detected from the uploaded photo context."}
+                        </div>
+                      </div>
+
+                      {showBrandModel && (
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div className="grid gap-2">
+                            <label className="text-xs font-medium text-zinc-700">Brand</label>
+                            <input
+                              value={brand}
+                              onChange={(e) => setBrand(e.target.value)}
+                              className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                              placeholder="Apple / Samsung / Dell / LG"
+                            />
+                          </div>
+                          <div className="grid gap-2">
+                            <label className="text-xs font-medium text-zinc-700">Model</label>
+                            <input
+                              value={model}
+                              onChange={(e) => setModel(e.target.value)}
+                              className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                              placeholder="iPhone 13 / Galaxy S22 / XPS 13"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="grid gap-2">
+                          <label className="text-xs font-medium text-zinc-700">Purchase year (optional)</label>
+                          <input
+                            value={purchaseYear}
+                            onChange={(e) => setPurchaseYear(e.target.value)}
+                            className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                            placeholder="2022"
+                          />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-xs font-medium text-zinc-700">Zip code (optional, for repair)</label>
+                          <input
+                            value={zip}
+                            onChange={(e) => setZip(e.target.value)}
+                            className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                            placeholder="75080"
+                            inputMode="numeric"
+                          />
+                          <div className="text-xs text-zinc-500">
+                            {zipStatus === "idle" && <span>&nbsp;</span>}
+                            {zipStatus === "loading" && <span>Looking up location…</span>}
+                            {zipStatus === "invalid" && <span>Enter a 5-digit US ZIP.</span>}
+                            {zipStatus === "not_found" && <span>ZIP not found.</span>}
+                            {zipStatus === "error" && <span>Couldn’t verify ZIP right now.</span>}
+                            {zipStatus === "ok" && zipMeta && <span>{zipMeta.city}, {zipMeta.state}</span>}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="grid gap-2">
+                          <label className="text-xs font-medium text-zinc-700">Condition</label>
+                          <select
+                            value={condition}
+                            onChange={(e) => setCondition(e.target.value)}
+                            className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                          >
+                            <option value="like_new">Like new</option>
+                            <option value="good">Good</option>
+                            <option value="worn">Worn</option>
+                            <option value="broken">Broken</option>
+                          </select>
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-xs font-medium text-zinc-700">Issue / symptoms (optional)</label>
+                          <input
+                            value={issue}
+                            onChange={(e) => setIssue(e.target.value)}
+                            className="w-full rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                            placeholder="Cracked screen / won’t charge / torn seam"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid gap-2">
+                        <label className="text-xs font-medium text-zinc-700">Top-k context</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={k}
+                          onChange={(e) => setK(Number(e.target.value))}
+                          className="w-32 rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <button
+                          disabled={loading}
+                          onClick={generateReceipt}
+                          className="rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                        >
+                          {loading ? "Generating…" : "Generate receipt"}
+                        </button>
+                        <div className="text-xs text-zinc-500">MVP: photo upload is UI-first; text details still seed retrieval.</div>
+                      </div>
+                    </>
+                  )}
 
                   {error && (
                     <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
@@ -602,14 +726,12 @@ export default function Home() {
                 <div className="border-b border-zinc-200 px-6 py-4">
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
-                      {/* Show the UI title we control (prevents wrong zip->state hallucination) */}
                       <div className="truncate text-base font-semibold">{active.title}</div>
 
                       <div className="mt-1 text-xs text-zinc-500">
                         Confidence: {formatPct(active.artifact.confidence)} · Model: {active.artifact.generation.chatModel}
                       </div>
 
-                      {/* Optional: keep model summary, but de-emphasize */}
                       {!isBlank(active.artifact.summary) && (
                         <div className="mt-2 text-xs text-zinc-400">Model summary: {active.artifact.summary}</div>
                       )}
@@ -642,41 +764,17 @@ export default function Home() {
                 </div>
 
                 <div className="px-6 py-5">
+                  {active.photo && (
+                    <div className="mb-6">
+                      <img
+                        src={active.photo}
+                        alt="Uploaded item"
+                        className="max-h-[300px] rounded-lg border border-zinc-200 object-contain"
+                      />
+                    </div>
+                  )}
+
                   <OptionCard option={active.artifact.options[activeTab]} />
-
-                  <div className="mt-6 grid gap-4">
-                    <details className="rounded-lg border border-zinc-200 p-4">
-                      <summary className="cursor-pointer text-sm font-medium">Assumptions</summary>
-                      <div className="mt-3 space-y-2 text-sm text-zinc-700">
-                        {active.artifact.assumptions.length === 0 ? (
-                          <div className="text-zinc-500">none</div>
-                        ) : (
-                          <ul className="list-disc pl-5">
-                            {active.artifact.assumptions.map((a, idx) => (
-                              <li key={idx}>{a}</li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    </details>
-
-                    <details className="rounded-lg border border-zinc-200 p-4">
-                      <summary className="cursor-pointer text-sm font-medium">Citations</summary>
-                      <div className="mt-3 text-sm text-zinc-700">
-                        {active.artifact.citations.length === 0 ? (
-                          <div className="text-zinc-500">none</div>
-                        ) : (
-                          <ul className="space-y-2">
-                            {active.artifact.citations.map((c, idx) => (
-                              <li key={idx} className="rounded-md bg-zinc-50 px-3 py-2 font-mono text-xs">
-                                chunkId={c.chunkId} sourceId={c.sourceId} distance={Number(c.distance).toFixed(4)}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    </details>
-                  </div>
                 </div>
               </div>
             )}
@@ -702,7 +800,7 @@ function OptionCard({ option }: { option: DecisionOption }) {
       </div>
 
       <div className="mt-4">
-        <div className="text-xs font-medium text-zinc-700">What changes this</div>
+        <div className="text-xs font-medium text-zinc-700">What would change the recommendation</div>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-zinc-800">
           {(option.whatChangesThis ?? []).map((s, idx) => (
             <li key={idx}>{s}</li>
