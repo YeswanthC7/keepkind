@@ -183,6 +183,15 @@ function formatItemTypeLabel(itemType: ItemType): string {
   }
 }
 
+async function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function Home() {
   const [receipts, setReceipts] = useState<LocalReceipt[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -223,7 +232,9 @@ export default function Home() {
 
   useEffect(() => {
     return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      if (previewUrl && previewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(previewUrl);
+      }
     };
   }, [previewUrl]);
 
@@ -289,7 +300,9 @@ export default function Home() {
   const active = useMemo(() => receipts.find((r) => r.id === activeId) ?? null, [receipts, activeId]);
 
   function resetForm() {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    if (previewUrl && previewUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(previewUrl);
+    }
 
     setActiveId(null);
     setActiveTab("maintain");
@@ -319,7 +332,9 @@ export default function Home() {
   }
 
   function onFileSelected(file: File) {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    if (previewUrl && previewUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(previewUrl);
+    }
 
     setSelectedFile(file);
     setPreviewUrl(URL.createObjectURL(file));
@@ -444,6 +459,7 @@ export default function Home() {
 
       const id = uuid();
       const createdAt = new Date().toISOString();
+      const base64 = await fileToBase64(selectedFile);
 
       const title = buildUiTitle({
         itemType,
@@ -457,7 +473,7 @@ export default function Home() {
         id,
         createdAt,
         title,
-        photo: previewUrl ?? undefined,
+        photo: base64,
         artifact,
       };
 
@@ -731,10 +747,6 @@ export default function Home() {
                       <div className="mt-1 text-xs text-zinc-500">
                         Confidence: {formatPct(active.artifact.confidence)} · Model: {active.artifact.generation.chatModel}
                       </div>
-
-                      {!isBlank(active.artifact.summary) && (
-                        <div className="mt-2 text-xs text-zinc-400">Model summary: {active.artifact.summary}</div>
-                      )}
                     </div>
                     <button
                       onClick={newReceipt}
