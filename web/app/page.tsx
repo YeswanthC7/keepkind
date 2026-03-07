@@ -42,6 +42,11 @@ type ZipMeta = {
   country: string;
 };
 
+type ResourceLink = {
+  label: string;
+  href: string;
+};
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
 const STORAGE_KEY = "keepkind.receipts.v1";
 const FIXED_DECISION_QUESTION = "What should I do with this item?";
@@ -181,6 +186,99 @@ function formatItemTypeLabel(itemType: ItemType): string {
     default:
       return "Couldn’t identify item from photo yet";
   }
+}
+
+function buildSearchQuery(params: {
+  itemType: ItemType;
+  brand: string;
+  model: string;
+  issue: string;
+}): string {
+  const parts = [
+    params.brand?.trim(),
+    params.model?.trim(),
+    params.itemType !== "unknown" && params.itemType !== "other" ? params.itemType : "",
+    params.issue?.trim(),
+  ].filter(Boolean);
+  return parts.join(" ").trim() || "used item";
+}
+
+function getOptionResourceLinks(params: {
+  optionKey: DecisionOptionKey;
+  itemType: ItemType;
+  brand: string;
+  model: string;
+  issue: string;
+  zipMeta: ZipMeta | null;
+}): ResourceLink[] {
+  const q = buildSearchQuery(params);
+  const location = params.zipMeta ? ` ${params.zipMeta.city} ${params.zipMeta.state}` : "";
+
+  if (params.optionKey === "repair") {
+    return [
+      {
+        label: "iFixit",
+        href: `https://www.ifixit.com/Search?query=${encodeURIComponent(q)}`,
+      },
+      {
+        label: "Google repair search",
+        href: `https://www.google.com/search?q=${encodeURIComponent(`${q} repair${location}`)}`,
+      },
+      {
+        label: "Yelp repair",
+        href: `https://www.yelp.com/search?find_desc=${encodeURIComponent(`${q} repair`)}&find_loc=${encodeURIComponent(
+          location.trim() || "United States"
+        )}`,
+      },
+    ];
+  }
+
+  if (params.optionKey === "resell") {
+    return [
+      {
+        label: "eBay",
+        href: `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`,
+      },
+      {
+        label: "Craigslist",
+        href: `https://www.google.com/search?q=${encodeURIComponent(`${q} site:craigslist.org`)}`,
+      },
+      {
+        label: "Facebook Marketplace",
+        href: `https://www.google.com/search?q=${encodeURIComponent(`${q} Facebook Marketplace`)}`,
+      },
+    ];
+  }
+
+  if (params.optionKey === "recycle") {
+    return [
+      {
+        label: "Earth911",
+        href: `https://search.earth911.com/?what=${encodeURIComponent(q)}&where=${encodeURIComponent(
+          params.zipMeta?.zip || ""
+        )}`,
+      },
+      {
+        label: "Google recycling search",
+        href: `https://www.google.com/search?q=${encodeURIComponent(`${q} recycle${location}`)}`,
+      },
+      {
+        label: "Manufacturer trade-in",
+        href: `https://www.google.com/search?q=${encodeURIComponent(`${q} trade in`)}`,
+      },
+    ];
+  }
+
+  return [
+    {
+      label: "Care guides",
+      href: `https://www.google.com/search?q=${encodeURIComponent(`${q} care guide`)}`,
+    },
+    {
+      label: "Maintenance tips",
+      href: `https://www.google.com/search?q=${encodeURIComponent(`${q} maintenance tips`)}`,
+    },
+  ];
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -499,6 +597,17 @@ export default function Home() {
   const showBrandModel =
     selectedFile !== null && (itemType === "phone" || itemType === "laptop" || itemType === "appliance");
 
+  const activeResourceLinks = active
+    ? getOptionResourceLinks({
+        optionKey: activeTab,
+        itemType,
+        brand,
+        model,
+        issue,
+        zipMeta: zipStatus === "ok" ? zipMeta : null,
+      })
+    : [];
+
   return (
     <div className="min-h-screen bg-white text-zinc-950">
       <div className="flex min-h-screen">
@@ -787,6 +896,23 @@ export default function Home() {
                   )}
 
                   <OptionCard option={active.artifact.options[activeTab]} />
+
+                  <div className="mt-4">
+                    <div className="mb-2 text-xs font-medium text-zinc-700">Helpful resources</div>
+                    <div className="flex flex-wrap gap-2">
+                      {activeResourceLinks.map((link) => (
+                        <a
+                          key={link.label}
+                          href={link.href}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-full border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                        >
+                          {link.label}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
