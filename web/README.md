@@ -1,154 +1,298 @@
-# KeepKind — Decision Receipts (MVP)
+# KeepKind
 
-KeepKind is a decision-receipt generator: upload an item (photo) + add a few details and it generates four options as “receipts”:
+KeepKind is a web-first decision engine that helps people decide what to do with the things they own.
 
-- **Maintain**
-- **Repair**
-- **Resell**
-- **Recycle**
+Instead of generic advice, the app generates a **Decision Receipt** that evaluates four possible outcomes:
 
-The goal is to help decide what to do with items you own, with **citations to supporting sources**.
+- Maintain
+- Repair
+- Resell
+- Recycle
 
-## Current MVP scope (what it does today)
+Each item becomes a receipt that explains the recommended steps and what factors could change the recommendation.
 
-- **Web UI (Next.js)**: a ChatGPT-style “receipt list” sidebar + a receipt viewer with tabs for Maintain/Repair/Resell/Recycle.
-- **Item details form**: item type + optional brand/model/year/condition/issue/zip.
-- **ZIP locality lookup (best-effort)**: shows locality/region based on ZIP so the UI doesn’t guess the state.
-- **Backend (Spring Boot)**:
-  - Create item: `POST /items`
-  - Attach text source for the item: `POST /items/{itemId}/sources/text`
-  - Embed the source (pgvector + Ollama embeddings): `POST /sources/{sourceId}/embed`
-  - Generate decision artifact (4 options): `POST /items/{itemId}/decision`
+The goal is to help users make **financially smart and sustainable ownership decisions** in a calm, minimal interface.
 
-**Important limitation (MVP):** the uploaded photo is currently used as an upload trigger. The backend is seeded with the user-entered details as a text source so retrieval isn’t empty. Actual image understanding (object detection / damage detection) is a later phase.
+---
 
-## What we have achieved so far
+# Product Concept
 
-- End-to-end flow works locally:
-  1) create an item in DB  
-  2) attach a “seed” text source (user-entered details)  
-  3) embed into pgvector via Ollama embedding model  
-  4) generate a 4-option decision artifact and render in the UI
-- Frontend renders a clean “decision receipt” with tabs per option.
-- ZIP → locality lookup prevents incorrect “state” guesses in the receipt title.
-- Item creation endpoint is stable (category defaults if missing).
+KeepKind is **not a chatbot**.
 
-## What is NOT done yet (roadmap)
+It is a **decision receipt generator**.
 
-### UX / Product
-- Remove or hide the freeform **Question** field (use a default internal question).
-- Auto-detect item type from photo (and show only relevant fields).
-- Provide item-type-specific brand/model suggestions + **Other** fallback.
+Users upload a photo of an item and provide a few details. The system then produces a structured decision artifact containing four parallel options.
 
-### Citations & Links (high priority)
-- Replace raw citation IDs with **human-friendly citations**:
-  - show source titles
-  - include clickable resource links
-- If the model mentions sites (Apple Support, Craigslist, etc.), show them as **small clickable buttons** within the option section.
+Example outputs:
 
-### Backend data model
-- Persist item metadata (type/brand/model/year/condition/zip) on the item, not only inside seeded text.
-- Extend decision response to include structured “recommended links” per option, so the UI can render buttons without guessing.
+- Maintain the item
+- Repair it
+- Resell it
+- Recycle it
 
-## Architecture (high-level)
+Each option includes:
 
-- **web/**: Next.js app (UI)
-- **server/**: Spring Boot API
-- **PostgreSQL + pgvector**: stores sources + chunks + embeddings
-- **Ollama**: provides:
-  - embeddings (`/api/embed`) for retrieval
-  - chat generation for decision artifact
+- steps to take
+- factors that would change the recommendation
+- helpful resource links
+
+---
+
+# Current MVP Features
+
+The current MVP supports the following flow:
+
+1. Upload an item photo
+2. Automatically attempt to detect item type
+3. Enter optional details
+4. Generate a decision receipt
+5. View four decision tabs
+6. Access helpful external resources
+7. Save receipts locally in the browser
+
+The interface includes:
+
+- ChatGPT-style sidebar history
+- Receipt detail panel
+- Four decision tabs
+- Helpful action links
+
+---
+
+# Example User Flow
+
+1. User uploads a photo of an item
+2. KeepKind tries to infer the item type
+3. User adds optional information
+4. A **decision receipt** is generated
+5. User compares four options:
+
+Maintain | Repair | Resell | Recycle
+
+Each option explains:
+
+- what to do
+- when the recommendation might change
+- useful external resources
+
+---
+
+# Architecture
+
+The system is split into two main components.
+
+## Backend
+
+Spring Boot API.
+
+Responsibilities:
+
+- item lifecycle
+- ingestion of text sources
+- chunking and embedding
+- vector search retrieval
+- decision generation
+- receipt generation
+
+Core technologies:
+
+- Java 17
+- Spring Boot
+- PostgreSQL
+- pgvector
+- Ollama (local embeddings + chat models)
+
+Backend phases implemented:
+
+Phase 0 — bootstrap  
+Phase 1 — ingestion and chunking  
+Phase 2 — embeddings and retrieval  
+Phase 3 — receipt lifecycle
+
+---
+
+## Frontend
+
+Next.js web application.
+
+Responsibilities:
+
+- photo upload
+- item metadata collection
+- receipt display
+- tab navigation
+- resource links
+- local receipt history
+
+Core technologies:
+
+- Next.js
+- React
+- TypeScript
+- Tailwind CSS
+
+Receipts are currently stored in **local browser storage**.
+
+---
+
+# Repository Structure
+```bash
+keepkind
+│
+├── docs
+│ ├── architecture.md
+│ ├── threat-model.md
+│ └── web-mvp-api.md
+│
+├── eval
+│ └── smoke-test.sh
+│
+├── infra
+│ └── docker-compose.yml
+│
+├── server
+│ └── Spring Boot backend
+│
+├── web
+│ └── Next.js frontend
+│
+└── README.md
+```
+---
+
+# Local Development
 
 ## Prerequisites
 
-- Node.js (for the web app)
-- Java + Maven (for Spring Boot)
-- PostgreSQL running locally and reachable
-- Ollama running locally at `http://localhost:11434`
+Install:
 
-You must have the required models available in Ollama (example):
-- `nomic-embed-text:latest` (embeddings)
-- `llama3.2:3b` (chat)
+- Java 17
+- Node.js 18+
+- Docker
+- Maven
+- Ollama
 
-## Local development
+---
 
-### 1) Start dependencies
+# Start Infrastructure
 
-**PostgreSQL**
-- Start your local Postgres (Docker or native). The server expects Postgres to be reachable (common default: `localhost:5432`).
+Start Postgres:
 
-**Ollama**
-- Ensure Ollama is running:
-  - `http://localhost:11434`
-
-Check models:
 ```bash
-curl http://localhost:11434/api/tags
-
-2) Run the backend (Spring Boot)
-
-The Maven wrapper is inside server/, so run commands from there:
-
+docker compose up -d
+Start Backend
 cd server
-
-./mvnw test
 ./mvnw spring-boot:run
+```
 
-Health checks:
+Backend runs on
 
-curl http://localhost:8080/health
-curl http://localhost:8080/health/db
-
-If tests fail with connection refused to localhost:5432, Postgres is not running or config is incorrect.
-
-3) Run the web app (Next.js)
+http://localhost:8080
+Start Frontend
+```bash
 cd web
 npm install
 npm run dev
+```
 
-Open:
+Frontend runs on
 
 http://localhost:3000
+Ollama Requirement
 
-4) Configure API base (optional)
+Decision generation requires Ollama running locally.
 
-The web app uses:
+Check:
+```bash
+curl http://localhost:11434/api/tags
+```
+Current MVP Limitations
 
-NEXT_PUBLIC_API_BASE (defaults to http://localhost:8080)
+The current version has several intentional simplifications.
 
-Example:
+Image understanding
 
-export NEXT_PUBLIC_API_BASE=http://localhost:8080
-How “Decision Receipts” are generated (MVP)
+The uploaded photo is not yet processed by an image model.
 
-User uploads a file (photo) and enters a few details.
+Item type detection currently relies on filename heuristics.
 
-Web creates an item via POST /items.
+Future versions will integrate real vision models.
 
-Web seeds a text source with the user’s item details via POST /items/{itemId}/sources/text.
+Citations
 
-Web triggers embedding via POST /sources/{sourceId}/embed.
+Citations currently reference internal chunk IDs.
 
-Web requests the decision artifact via POST /items/{itemId}/decision.
+Future versions will expose:
 
-Notes on citations (current MVP)
+source titles
 
-The UI currently shows citations as internal identifiers (chunkId/sourceId/distance).
+relevant excerpts
 
-Converting these into real clickable resources (titles + URLs) is part of the next milestone.
+useful links
 
-Repo structure
+Local storage
 
-web/ — Next.js UI
+Receipts are stored locally in the browser.
 
-server/ — Spring Boot API
+Future versions will support:
 
-infra/ — local infra (docker-compose etc., if present)
+user accounts
 
-docs/ — architecture + threat model docs
+persistent storage
 
-eval/ — smoke tests / eval scripts
+cross-device history
 
-Deploy (later)
+Roadmap
+Phase 4 — Web Product Layer
 
-This MVP is currently optimized for local dev. Production deployment (hosting Postgres, hosting Ollama or replacing with a hosted LLM provider, auth, rate limiting, etc.) is a later phase.
+Focus on user experience.
+
+Planned improvements:
+
+real image understanding
+
+automatic item detection
+
+dynamic forms by item type
+
+structured resource links
+
+better receipt explanations
+
+Phase 5 — Intelligence Layer
+
+item-specific repair knowledge
+
+resale price estimates
+
+lifespan prediction
+
+local repair network integration
+
+Phase 6 — Platform
+
+user accounts
+
+shared receipts
+
+exportable decision reports
+
+sustainability insights
+
+Design Philosophy
+
+KeepKind aims to be:
+
+calm
+
+minimal
+
+practical
+
+non-judgmental
+
+The app focuses on decision clarity, not chat interactions.
+
+License
+
+Internal development project.
