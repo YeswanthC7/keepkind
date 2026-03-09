@@ -1,297 +1,287 @@
-# KeepKind
+# KeepKind Backend
 
-KeepKind is a web-first decision engine that helps people decide what to do with the things they own.
+KeepKind Backend is the primary backend and core source of truth for the KeepKind product.
 
-Instead of generic advice, the app generates a **Decision Receipt** that evaluates four possible outcomes:
+KeepKind is a decision engine that helps users decide what to do with things they own by generating a structured **Decision Receipt**.
+
+It is **not** a generic chatbot.
+
+For each item, the system evaluates four parallel options:
 
 - Maintain
 - Repair
 - Resell
 - Recycle
 
-Each item becomes a receipt that explains the recommended steps and what factors could change the recommendation.
-
-The goal is to help users make **financially smart and sustainable ownership decisions** in a calm, minimal interface.
+This repository contains the backend services, retrieval pipeline, receipt generation logic, and supporting documentation for the product.
 
 ---
 
-# Product Concept
+## Repository Role
 
-KeepKind is **not a chatbot**.
+This repository is the **primary backend implementation** for KeepKind.
 
-It is a **decision receipt generator**.
+A separate frontend sandbox repository may exist for rapid UI iteration and prototyping, but this repository is the main source of truth for:
 
-Users upload a photo of an item and provide a few details. The system then produces a structured decision artifact containing four parallel options.
-
-Example outputs:
-
-- Maintain the item
-- Repair it
-- Resell it
-- Recycle it
-
-Each option includes:
-
-- steps to take
-- factors that would change the recommendation
-- helpful resource links
-
----
-
-# Current MVP Features
-
-The current MVP supports the following flow:
-
-1. Upload an item photo
-2. Automatically attempt to detect item type
-3. Enter optional details
-4. Generate a decision receipt
-5. View four decision tabs
-6. Access helpful external resources
-7. Save receipts locally in the browser
-
-The interface includes:
-
-- ChatGPT-style sidebar history
-- Receipt detail panel
-- Four decision tabs
-- Helpful action links
-
----
-
-# Example User Flow
-
-1. User uploads a photo of an item
-2. KeepKind tries to infer the item type
-3. User adds optional information
-4. A **decision receipt** is generated
-5. User compares four options:
-
-Maintain | Repair | Resell | Recycle
-
-Each option explains:
-
-- what to do
-- when the recommendation might change
-- useful external resources
-
----
-
-# Architecture
-
-The system is split into two main components.
-
-## Backend
-
-Spring Boot API.
-
-Responsibilities:
-
-- item lifecycle
-- ingestion of text sources
-- chunking and embedding
-- vector search retrieval
+- backend APIs
+- item and receipt lifecycle
+- RAG pipeline
+- embeddings and retrieval
 - decision generation
-- receipt generation
+- architecture and backend documentation
 
-Core technologies:
+---
+
+## Product Summary
+
+KeepKind helps users make thoughtful, financially intelligent, and sustainable ownership decisions.
+
+Core flow:
+
+1. User uploads an item photo in the frontend
+2. User adds structured details
+3. Backend builds decision context
+4. System generates a **Decision Receipt**
+5. Receipt presents four options:
+   - Maintain
+   - Repair
+   - Resell
+   - Recycle
+
+The product is designed to feel calm, minimal, and practical.
+
+---
+
+## Current Backend Capabilities
+
+### Phase 0 — Bootstrap
+Implemented:
+
+- Spring Boot skeleton
+- PostgreSQL + pgvector local infra
+- health endpoint
+
+### Phase 1 — Ingestion and Indexing
+Implemented:
+
+- items / sources / chunks model
+- source ingestion via text
+- chunking pipeline
+
+### Phase 2 — Embeddings, Retrieval, and Basic RAG
+Implemented:
+
+- Ollama embedding client
+- embedding endpoint
+- vector search
+- ask endpoint with citations
+
+### Phase 3 — Decision Receipts and Lifecycle
+Implemented:
+
+- receipt generation
+- persisted receipts
+- list / latest / read flows
+- export flow
+- soft delete
+- receipt versioning
+- generation metadata
+
+### Web MVP Support
+Implemented for frontend integration:
+
+- item creation
+- source seeding
+- source embedding
+- non-persisted `/decision` artifact endpoint for web receipt generation
+- CORS support for local frontend development
+
+---
+
+## Key Backend Endpoints
+
+Examples of supported backend capabilities include:
+
+- item creation
+- source ingestion
+- embedding generation
+- vector retrieval
+- ask / RAG answer generation
+- decision artifact generation
+- persisted receipt lifecycle
+- receipt export
+
+The backend includes a dedicated decision endpoint for web receipt generation:
+
+- `POST /items/{itemId}/decision?q=...&k=...`
+
+This endpoint returns a four-option decision artifact used by the frontend.
+
+---
+
+## Tech Stack
 
 - Java 17
 - Spring Boot
 - PostgreSQL
 - pgvector
-- Ollama (local embeddings + chat models)
-
-Backend phases implemented:
-
-Phase 0 — bootstrap  
-Phase 1 — ingestion and chunking  
-Phase 2 — embeddings and retrieval  
-Phase 3 — receipt lifecycle
+- Ollama
+- Maven Wrapper
 
 ---
 
-## Frontend
+## Repository Structure
 
-Next.js web application.
+```text
+server/
+  HELP.md
+  mvnw
+  mvnw.cmd
+  pom.xml
+  src/main/java/com/keepkind/
+    AskController.java
+    ChunkSearchController.java
+    ChunkService.java
+    EmbeddingController.java
+    EmbeddingTestController.java
+    HealthController.java
+    ItemController.java
+    KeepkindServerApplication.java
+    OllamaChatClient.java
+    OllamaEmbeddingClient.java
+    ReceiptController.java
+    ReceiptReadController.java
+    SourceController.java
+    VectorSearchController.java
+    CorsConfig.java
+  src/main/resources/
+    application.properties
+    application.yml
+  src/test/java/com/keepkind/
+    KeepkindServerApplicationTests.java
 
-Responsibilities:
+docs/
+  architecture.md
+  threat-model.md
+  web-mvp-api.md
 
-- photo upload
-- item metadata collection
-- receipt display
-- tab navigation
-- resource links
-- local receipt history
+eval/
+  smoke-test.sh
 
-Core technologies:
+infra/
+  docker-compose.yml
 
-- Next.js
-- React
-- TypeScript
-- Tailwind CSS
-
-Receipts are currently stored in **local browser storage**.
-
----
-
-# Repository Structure
-```bash
-keepkind
-│
-├── docs
-│ ├── architecture.md
-│ ├── threat-model.md
-│ └── web-mvp-api.md
-│
-├── eval
-│ └── smoke-test.sh
-│
-├── infra
-│ └── docker-compose.yml
-│
-├── server
-│ └── Spring Boot backend
-│
-├── web
-│ └── Next.js frontend
-│
-└── README.md
-```
----
-
-# Local Development
-
-## Prerequisites
+Local Development
+Prerequisites
 
 Install:
 
-- Java 17
-- Node.js 18+
-- Docker
-- Maven
-- Ollama
+Java 17
 
----
+Docker
 
-# Start Infrastructure
+Ollama
 
-Start Postgres:
+You also need:
 
-```bash
+PostgreSQL running locally or through Docker
+
+Ollama serving locally for embeddings and generation
+
+Start Infrastructure
+
+From the project root:
+
 docker compose up -d
 Start Backend
+
+From the project root:
+
 cd server
 ./mvnw spring-boot:run
-```
 
-Backend runs on
+Backend default URL:
 
 http://localhost:8080
-Start Frontend
-```bash
-cd web
-npm install
-npm run dev
-```
+Run Tests
+cd server
+./mvnw test
 
-Frontend runs on
+Note:
+tests may require PostgreSQL to be running.
 
-http://localhost:3000
 Ollama Requirement
 
-Decision generation requires Ollama running locally.
+Decision generation and embeddings require Ollama to be available locally.
 
-Check:
-```bash
+Check Ollama:
+
 curl http://localhost:11434/api/tags
-```
-Current MVP Limitations
+Important Operational Notes
 
-The current version has several intentional simplifications.
+Maven wrapper is inside server/
 
-Image understanding
+PostgreSQL must be running or backend startup/tests may fail
 
-The uploaded photo is not yet processed by an image model.
+Ollama must be running or decision generation may fail
 
-Item type detection currently relies on filename heuristics.
+CORS is configured for local frontend/backend development
 
-Future versions will integrate real vision models.
+The current frontend may seed item details as text sources before calling the decision endpoint
 
-Citations
+Current Limitations
 
-Citations currently reference internal chunk IDs.
+true image understanding is not yet handled by this backend
 
-Future versions will expose:
+current frontend may still use heuristic item detection
 
-source titles
+citations exist in backend but may not yet be exposed as polished user-facing resources
 
-relevant excerpts
+some web-MVP behavior currently relies on seeded text context
 
-useful links
+Documentation
 
-Local storage
+See:
 
-Receipts are stored locally in the browser.
+docs/architecture.md
 
-Future versions will support:
+docs/threat-model.md
 
-user accounts
+docs/web-mvp-api.md
 
-persistent storage
+These documents describe the current architecture, risk model, and frontend/backend integration contract.
 
-cross-device history
+Roadmap Direction
 
-Roadmap
-Phase 4 — Web Product Layer
+Planned future backend evolution includes:
 
-Focus on user experience.
+real image understanding integration
 
-Planned improvements:
+richer structured decision intelligence
 
-real image understanding
+better resource grounding
 
-automatic item detection
+item-type-specific intelligence
 
-dynamic forms by item type
+persistent user/item profiles
 
-structured resource links
+export and sharing improvements
 
-better receipt explanations
+stronger ownership lifecycle features
 
-Phase 5 — Intelligence Layer
+Design Principle
 
-item-specific repair knowledge
+KeepKind Backend exists to power a structured decision product, not a chat interface.
 
-resale price estimates
+The backend should continue supporting:
 
-lifespan prediction
+clear decision artifacts
 
-local repair network integration
+explainable option generation
 
-Phase 6 — Platform
+future structured intelligence
 
-user accounts
-
-shared receipts
-
-exportable decision reports
-
-sustainability insights
-
-Design Philosophy
-
-KeepKind aims to be:
-
-calm
-
-minimal
-
-practical
-
-non-judgmental
-
-The app focuses on decision clarity, not chat interactions.
+reliable integration with a calm, consumer-facing frontend
 
 License
 
